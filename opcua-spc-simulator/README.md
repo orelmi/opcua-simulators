@@ -11,6 +11,7 @@ Simulateur OPC UA pour tester les cartes de contrôle SPC (Statistical Process C
 - **Machine d'état d'acquisition** conforme au XML NodeSet
 - **10 scénarios de simulation** pour tester différentes situations de contrôle qualité
 - **Fréquences séparées** : EngValue (100ms) et SPC samples (5s)
+- **Dashboard web** temps réel pour visualiser l'état, les paramètres et changer de scénario dynamiquement
 
 ## Installation
 
@@ -71,6 +72,7 @@ Le serveur démarre en état `NotConfigured`. Workflow :
 | `--list-scenarios` | Lister les scénarios disponibles | - |
 | `-n, --namespace-index <index>` | Index du namespace (1=serveur, 2+=personnalisé) | 2 |
 | `--node-id-format <format>` | Format des NodeId: "string" (ns=X;s=Path) ou "numeric" (ns=X;i=NNN) | string |
+| `-w, --dashboard-port <port>` | Port du dashboard web (0 pour désactiver) | 3000 |
 
 ### Initialiser la base de données avec des données historiques
 
@@ -276,6 +278,33 @@ npm run dev -- --scenario nelson_rules --params 1
 npm run dev -- --spc-frequency 1000 --eng-frequency 50
 ```
 
+## Dashboard Web
+
+Le simulateur inclut un dashboard web temps réel accessible par défaut sur `http://localhost:3000`.
+
+### Fonctionnalités du dashboard
+
+- **Visualisation de l'état de la station** : Affiche l'état actuel (NotConfigured, Idle, AcquisitionStarted, etc.)
+- **Contrôle de la machine d'état** : Boutons Configure, Start, Stop, Reset
+- **Changement de scénario** : Sélection dynamique du scénario de simulation
+- **Affichage des paramètres** : Cards pour chaque paramètre avec :
+  - SampleValue (valeur SPC historisée, mise à jour toutes les 5s)
+  - EngValue (valeur temps réel, mise à jour toutes les 100ms)
+  - SampleIndex (compteur d'échantillons)
+  - Nom technique et unité physique
+
+### Désactiver le dashboard
+
+```bash
+npm start -- --dashboard-port 0
+```
+
+### Fréquences de mise à jour
+
+- **EngValue** : Mise à jour haute fréquence (100ms par défaut) pour le suivi temps réel
+- **SampleValue** : Mise à jour basse fréquence (5s par défaut) pour l'historisation SPC
+- Les deux valeurs sont affichées distinctement sur le dashboard pour refléter leurs fréquences différentes
+
 ## Connexion client OPC UA
 
 Endpoint: `opc.tcp://localhost:4840/UA/CCSimulator`
@@ -304,6 +333,8 @@ src/
 ├── opcua/
 │   ├── server.ts                # Serveur OPC UA
 │   └── address-space-builder.ts # Construction de l'espace d'adresses
+├── dashboard/
+│   └── dashboard-server.ts      # Serveur web dashboard temps réel
 └── scripts/
     └── init-database.ts         # Initialisation des données
 ```

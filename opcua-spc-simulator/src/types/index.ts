@@ -100,6 +100,8 @@ export interface CLIOptions {
   namespaceIndex: number;
   /** NodeId format: 'string' for ns=X;s=Path or 'numeric' for ns=X;i=NNN */
   nodeIdFormat: NodeIdFormat;
+  /** Web dashboard port (0 to disable) */
+  dashboardPort: number;
 }
 
 export enum AcquisitionStatus {

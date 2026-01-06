@@ -4,12 +4,14 @@
  */
 
 import { EventEmitter } from 'events';
-import { ParameterConfig, SimulationScenario, HistoricalDataPoint } from '../types';
+import { ParameterConfig, SimulationScenario, HistoricalDataPoint, AcquisitionStatus } from '../types';
 import { getScenario } from './scenarios';
+import { StationStateMachine } from './station-state-machine';
 
 export interface ParameterState {
   config: ParameterConfig;
   currentValue: number;
+  sampleValue: number; // alias for currentValue (SPC sample)
   engValue: number;
   sampleIndex: number;
   lastUpdate: Date;
@@ -25,6 +27,7 @@ export class ParameterSimulator extends EventEmitter {
   private sampleRate: number;
   private spcFrequency: number;
   private engFrequency: number;
+  private stateMachine: StationStateMachine | null = null;
 
   /**
    * @param scenarioName - Name of the simulation scenario
@@ -42,6 +45,30 @@ export class ParameterSimulator extends EventEmitter {
   }
 
   /**
+   * Set the station state machine reference
+   * SampleValue will only be updated when acquisition is active
+   */
+  setStateMachine(stateMachine: StationStateMachine): void {
+    this.stateMachine = stateMachine;
+
+    // Listen for reset event to reset sample indices
+    this.stateMachine.on('reset', () => {
+      this.resetSampleIndices();
+    });
+  }
+
+  /**
+   * Reset all sample indices to 0
+   */
+  resetSampleIndices(): void {
+    for (const [, state] of this.parameters) {
+      state.sampleIndex = 0;
+      state.lastSpcEmit = 0;
+    }
+    console.log('Sample indices reset to 0');
+  }
+
+  /**
    * Add a parameter to simulate
    */
   addParameter(config: ParameterConfig): void {
@@ -49,6 +76,7 @@ export class ParameterSimulator extends EventEmitter {
     this.parameters.set(config.index, {
       config,
       currentValue: initialValue,
+      sampleValue: initialValue,
       engValue: initialValue, // Assume 1:1 scaling for simplicity
       sampleIndex: 0,
       lastUpdate: new Date(),
@@ -81,14 +109,15 @@ export class ParameterSimulator extends EventEmitter {
     for (const [index, state] of this.parameters) {
       const newValue = this.generateValue(state.config);
 
-      // Always update current value (internal state)
+      // Always update current/internal value
       state.currentValue = newValue;
-      state.engValue = newValue; // Can add scaling transformation here
       state.lastUpdate = timestamp;
 
       // Emit EngValue update at engFrequency (default 100ms)
+      // EngValue is updated at high frequency for real-time display
       if (now - state.lastEngEmit >= this.engFrequency) {
         state.lastEngEmit = now;
+        state.engValue = newValue; // Update engValue only at its own frequency
         this.emit(`engValue:${index}`, {
           timestamp,
           parameterIndex: index,
@@ -97,14 +126,19 @@ export class ParameterSimulator extends EventEmitter {
       }
 
       // Emit SPC sample (SampleValue/SampleIndex) at spcFrequency (default 5s)
-      if (now - state.lastSpcEmit >= this.spcFrequency) {
+      // SampleValue is only updated at SPC frequency (slower) for historization
+      // AND only when acquisition is active (AcquisitionStarted state)
+      const isAcquiring = this.stateMachine?.getStatus() === AcquisitionStatus.AcquisitionStarted;
+
+      if (isAcquiring && now - state.lastSpcEmit >= this.spcFrequency) {
         state.sampleIndex++;
         state.lastSpcEmit = now;
+        state.sampleValue = newValue; // Update sampleValue only at SPC frequency
 
         const dataPoint: HistoricalDataPoint = {
           timestamp,
           parameterIndex: index,
-          value: newValue,
+          value: state.sampleValue,
           engValue: state.engValue,
           sampleIndex: state.sampleIndex,
         };
@@ -143,9 +177,11 @@ export class ParameterSimulator extends EventEmitter {
    * Change scenario at runtime
    */
   setScenario(scenarioName: string): void {
+    const previousScenario = this.scenario.name;
     this.scenario = getScenario(scenarioName);
     this.startTime = Date.now(); // Reset time reference
-    console.log(`Scenario changed to: ${this.scenario.name}`);
+    console.log(`[Simulator] Scenario changed from '${previousScenario}' to '${this.scenario.name}'`);
+    this.emit('scenarioChanged', { previousScenario, newScenario: this.scenario.name });
   }
 
   /**

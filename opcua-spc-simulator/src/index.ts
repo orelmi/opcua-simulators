@@ -34,6 +34,7 @@ program
   .option('--list-scenarios', 'List available simulation scenarios')
   .option('-n, --namespace-index <index>', 'Namespace index for custom nodes (1=server namespace, 2+=custom)', '2')
   .option('--node-id-format <format>', 'NodeId format: "string" (ns=X;s=Path) or "numeric" (ns=X;i=NNN)', 'string')
+  .option('-w, --dashboard-port <port>', 'Web dashboard port (0 to disable)', '3000')
   .action(async (options) => {
     // Handle list scenarios
     if (options.listScenarios) {
@@ -65,6 +66,7 @@ program
       verbose: options.verbose,
       namespaceIndex: Math.max(1, parseInt(options.namespaceIndex, 10)),
       nodeIdFormat,
+      dashboardPort: parseInt(options.dashboardPort, 10),
     };
 
     // Validate parameter count

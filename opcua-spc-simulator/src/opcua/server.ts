@@ -15,6 +15,7 @@ import { AddressSpaceBuilder } from './address-space-builder';
 import { SQLiteHistoryStore } from '../database/sqlite-store';
 import { ParameterSimulator, createDefaultParameters } from '../simulation/parameter-simulator';
 import { StationStateMachine } from '../simulation/station-state-machine';
+import { DashboardServer } from '../dashboard/dashboard-server';
 import { CLIOptions, ParameterConfig, TriggerType } from '../types';
 import path from 'path';
 import fs from 'fs';
@@ -24,6 +25,7 @@ export class CCSimulatorServer {
   private historyStore: SQLiteHistoryStore;
   private simulator: ParameterSimulator;
   private stateMachine: StationStateMachine;
+  private dashboard: DashboardServer | null = null;
   private options: CLIOptions;
   private parameterConfigs: ParameterConfig[];
 
@@ -77,6 +79,9 @@ export class CCSimulatorServer {
     // User must send Configure command to start the workflow:
     // NotConfigured -> Configure -> Configuring -> Idle -> Start -> AcquisitionStarted -> Stop -> AcquisitionStopped -> Reset -> Idle
     this.stateMachine = new StationStateMachine(0);
+
+    // Connect state machine to simulator so SampleValue updates only during acquisition
+    this.simulator.setStateMachine(this.stateMachine);
   }
 
   /**
@@ -145,6 +150,16 @@ export class CCSimulatorServer {
     // Start simulation
     this.simulator.start();
 
+    // Start web dashboard if port > 0
+    if (this.options.dashboardPort > 0) {
+      this.dashboard = new DashboardServer({
+        port: this.options.dashboardPort,
+        simulator: this.simulator,
+        stateMachine: this.stateMachine,
+      });
+      await this.dashboard.start();
+    }
+
     const endpointUrl = this.server.getEndpointUrl();
     console.log('='.repeat(60));
     console.log('OPC UA CC Simulator Server started');
@@ -158,6 +173,9 @@ export class CCSimulatorServer {
     console.log(`Target: ${this.options.target}`);
     console.log(`Tolerance: LSL=${(this.options.target * (1 - this.options.lslOffset / 100)).toFixed(4)}, USL=${(this.options.target * (1 + this.options.uslOffset / 100)).toFixed(4)}`);
     console.log(`Database: ${this.options.dbPath}`);
+    if (this.options.dashboardPort > 0) {
+      console.log(`Dashboard: http://localhost:${this.options.dashboardPort}`);
+    }
     console.log('='.repeat(60));
   }
 
@@ -165,6 +183,12 @@ export class CCSimulatorServer {
    * Stop the server
    */
   async stop(): Promise<void> {
+    // Stop dashboard
+    if (this.dashboard) {
+      await this.dashboard.stop();
+      this.dashboard = null;
+    }
+
     // Stop simulation
     this.simulator.stop();
 
