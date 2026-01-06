@@ -17,20 +17,12 @@ import {
   AccessLevelFlag,
   HistoryData,
 } from 'node-opcua';
-import { ParameterConfig, AcquisitionStatus, TriggerType, CLIOptions, NodeIdFormat } from '../types';
+import { ParameterConfig, AcquisitionStatus, TriggerType, CLIOptions } from '../types';
 import { SQLiteHistoryStore } from '../database/sqlite-store';
 import { ParameterSimulator, ParameterState } from '../simulation/parameter-simulator';
 import { StationStateMachine } from '../simulation/station-state-machine';
 
 const NAMESPACE_URI = 'http://opcua-simulators.local/UA/msp';
-
-/**
- * NodeId generator options
- */
-interface NodeIdGeneratorOptions {
-  namespaceIndex: number;
-  format: NodeIdFormat;
-}
 
 export interface CCParameter {
   object: UAObject;
@@ -113,7 +105,17 @@ export class AddressSpaceBuilder {
     options: CLIOptions
   ) {
     this.addressSpace = addressSpace;
-    this.namespace = addressSpace.registerNamespace(NAMESPACE_URI);
+
+    // Get or create namespace based on requested index
+    // ns=0 is OPC UA Foundation, ns=1 is server namespace
+    if (options.namespaceIndex === 1) {
+      // Use the server's own namespace (index 1)
+      this.namespace = addressSpace.getOwnNamespace();
+    } else {
+      // Register a new namespace (will get index 2 or higher)
+      this.namespace = addressSpace.registerNamespace(NAMESPACE_URI);
+    }
+
     this.historyStore = historyStore;
     this.simulator = simulator;
     this.stateMachine = stateMachine;

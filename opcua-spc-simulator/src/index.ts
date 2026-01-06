@@ -32,7 +32,7 @@ program
   .option('-d, --db <path>', 'SQLite database path', './data/cc_history.db')
   .option('-v, --verbose', 'Enable verbose logging', false)
   .option('--list-scenarios', 'List available simulation scenarios')
-  .option('-n, --namespace-index <index>', 'Namespace index for custom nodes', '1')
+  .option('-n, --namespace-index <index>', 'Namespace index for custom nodes (1=server namespace, 2+=custom)', '2')
   .option('--node-id-format <format>', 'NodeId format: "string" (ns=X;s=Path) or "numeric" (ns=X;i=NNN)', 'string')
   .action(async (options) => {
     // Handle list scenarios
@@ -63,7 +63,7 @@ program
       engFrequency: parseInt(options.engFrequency, 10),
       dbPath: options.db,
       verbose: options.verbose,
-      namespaceIndex: parseInt(options.namespaceIndex, 10),
+      namespaceIndex: Math.max(1, parseInt(options.namespaceIndex, 10)),
       nodeIdFormat,
     };
 
@@ -133,13 +133,23 @@ program
       console.log('  Objects/Station/Context/SpecDouble1-3          - Client writable');
       console.log('  Objects/Station/Context/SpecString1-3          - Client writable');
       console.log('\nParameter nodes (P01-P24 always created, enabled based on --params):');
-      console.log('  Objects/P01/SampleValue              - SPC sample value (historized)');
-      console.log('  Objects/P01/EngValue                 - Engineering value (real-time, not historized)');
-      console.log('  Objects/P01/SampleIndex              - Sample counter');
-      console.log('  Objects/P01/Enabled                  - Parameter enabled (true/false)');
-      console.log('  Objects/P01/PhysicalUnit             - Unit of measurement (A, V, °C, mm, etc.)');
-      console.log('  Objects/P01/Config/EngRange/MinimumValue - LSL');
-      console.log('  Objects/P01/Config/EngRange/MaximumValue - USL');
+      console.log('  Objects/P01/SampleValue                        - SPC sample value (historized)');
+      console.log('  Objects/P01/EngValue                           - Engineering value (real-time, not historized)');
+      console.log('  Objects/P01/SampleIndex                        - Sample counter');
+      console.log('  Objects/P01/Name                               - Technical name (e.g., "WeldCurrent")');
+      console.log('  Objects/P01/ParameterIndex                     - Parameter index (1-24)');
+      console.log('  Objects/P01/Enabled                            - Parameter enabled (true/false)');
+      console.log('  Objects/P01/PhysicalUnit                       - Unit of measurement (A, V, °C, mm, etc.)');
+      console.log('  Objects/P01/Config/EngRange/MinimumValue       - LSL');
+      console.log('  Objects/P01/Config/EngRange/MaximumValue       - USL');
+      console.log('  Objects/P01/Config/Processing/Function         - 0=None, 1=Average, 2=MovingAverage');
+      console.log('  Objects/P01/Config/Processing/WindowSize       - Processing window size');
+      console.log('  Objects/P01/Config/ProcessingFilter/FilterType - Filter type');
+      console.log('  Objects/P01/Config/ProcessingFilter/Order      - Filter order');
+      console.log('  Objects/P01/Config/ProcessingFilter/LowCut     - Low cut frequency');
+      console.log('  Objects/P01/Config/ProcessingFilter/HighCut    - High cut frequency');
+      console.log('  Objects/P01/Config/ProcessingFilter/BandType   - Band type');
+      console.log('  Objects/P01/Config/SampleRate                  - Sample rate in ms');
       console.log('\nPress Ctrl+C to stop the server');
       console.log('-'.repeat(60));
 

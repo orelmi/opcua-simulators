@@ -67,8 +67,9 @@ export interface HistoricalDataPoint {
 
 /**
  * NodeId format type
- * - 'string': ns=X;s=Path.To.Variable (e.g., ns=1;s=Station.Name)
+ * - 'string': ns=X;s=Path.To.Variable (e.g., ns=2;s=Station.Name)
  * - 'numeric': ns=X;i=NNNNN (auto-incremented numeric IDs)
+ * Note: Default namespace index is 2 (0=OPC UA, 1=Server, 2+=Custom)
  */
 export type NodeIdFormat = 'string' | 'numeric';
 
@@ -95,7 +96,7 @@ export interface CLIOptions {
   verbose: boolean;
   /** Target value for all parameters */
   target: number;
-  /** Namespace index for custom nodes (default: 1) */
+  /** Namespace index for custom nodes (default: 2, use 1 for server namespace) */
   namespaceIndex: number;
   /** NodeId format: 'string' for ns=X;s=Path or 'numeric' for ns=X;i=NNN */
   nodeIdFormat: NodeIdFormat;
