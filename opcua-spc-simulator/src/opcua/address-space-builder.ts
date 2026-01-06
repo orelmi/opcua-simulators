@@ -22,7 +22,7 @@ import { SQLiteHistoryStore } from '../database/sqlite-store';
 import { ParameterSimulator, ParameterState } from '../simulation/parameter-simulator';
 import { StationStateMachine } from '../simulation/station-state-machine';
 
-const NAMESPACE_URI = 'http://framatome.com/UA/msp';
+const NAMESPACE_URI = 'http://opcua-simulators.local/UA/msp';
 
 export interface CCParameter {
   object: UAObject;
@@ -32,7 +32,20 @@ export interface CCParameter {
   name: UAVariable;
   parameterIndex: UAVariable;
   enabled: UAVariable;
-  unit: UAVariable;
+  physicalUnit: UAVariable;
+  // Config/Processing
+  processingObject: UAObject;
+  processingFunction: UAVariable;
+  processingWindowSize: UAVariable;
+  // Config/ProcessingFilter
+  processingFilterObject: UAObject;
+  filterType: UAVariable;
+  filterOrder: UAVariable;
+  filterLowCut: UAVariable;
+  filterHighCut: UAVariable;
+  filterBandType: UAVariable;
+  // Config/SampleRate
+  sampleRate: UAVariable;
 }
 
 export interface StationNodes {
@@ -201,15 +214,6 @@ export class AddressSpaceBuilder {
       value: { dataType: DataType.String, value: config.displayName },
     });
 
-    // Create Description variable
-    this.namespace.addVariable({
-      componentOf: paramObject,
-      browseName: 'Description',
-      displayName: 'Description',
-      dataType: DataType.String,
-      value: { dataType: DataType.String, value: config.description },
-    });
-
     // Create ParameterIndex variable
     const parameterIndexVar = this.namespace.addVariable({
       componentOf: paramObject,
@@ -228,11 +232,11 @@ export class AddressSpaceBuilder {
       value: { dataType: DataType.Boolean, value: config.enabled },
     });
 
-    // Create Unit variable
-    const unitVar = this.namespace.addVariable({
+    // Create PhysicalUnit variable
+    const physicalUnitVar = this.namespace.addVariable({
       componentOf: paramObject,
-      browseName: 'Unit',
-      displayName: 'Unit',
+      browseName: 'PhysicalUnit',
+      displayName: 'PhysicalUnit',
       dataType: DataType.String,
       value: { dataType: DataType.String, value: config.unit },
     });
@@ -267,6 +271,108 @@ export class AddressSpaceBuilder {
       value: { dataType: DataType.Double, value: config.toleranceLimits.usl },
     });
 
+    // Create Config/Processing object (CCProcessingConfigType)
+    const processingObject = this.namespace.addObject({
+      componentOf: configObject,
+      browseName: 'Processing',
+      displayName: 'Processing',
+    });
+
+    // Config/Processing/Function (UInt16 - ProcessingFunctionEnum: None=0, Average=1, MovingAverage=2)
+    const processingFunction = this.namespace.addVariable({
+      componentOf: processingObject,
+      browseName: 'Function',
+      displayName: 'Function',
+      dataType: DataType.UInt16,
+      value: { dataType: DataType.UInt16, value: 0 }, // None by default
+      accessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+      userAccessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+    });
+
+    // Config/Processing/WindowSize (UInt32)
+    const processingWindowSize = this.namespace.addVariable({
+      componentOf: processingObject,
+      browseName: 'WindowSize',
+      displayName: 'WindowSize',
+      dataType: DataType.UInt32,
+      value: { dataType: DataType.UInt32, value: 1 },
+      accessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+      userAccessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+    });
+
+    // Create Config/ProcessingFilter object (CCProcessingFilterType)
+    const processingFilterObject = this.namespace.addObject({
+      componentOf: configObject,
+      browseName: 'ProcessingFilter',
+      displayName: 'ProcessingFilter',
+    });
+
+    // Config/ProcessingFilter/FilterType (Int16)
+    const filterType = this.namespace.addVariable({
+      componentOf: processingFilterObject,
+      browseName: 'FilterType',
+      displayName: 'FilterType',
+      dataType: DataType.Int16,
+      value: { dataType: DataType.Int16, value: 0 },
+      accessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+      userAccessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+    });
+
+    // Config/ProcessingFilter/Order (Int16)
+    const filterOrder = this.namespace.addVariable({
+      componentOf: processingFilterObject,
+      browseName: 'Order',
+      displayName: 'Order',
+      dataType: DataType.Int16,
+      value: { dataType: DataType.Int16, value: 0 },
+      accessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+      userAccessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+    });
+
+    // Config/ProcessingFilter/LowCut (Double)
+    const filterLowCut = this.namespace.addVariable({
+      componentOf: processingFilterObject,
+      browseName: 'LowCut',
+      displayName: 'LowCut',
+      dataType: DataType.Double,
+      value: { dataType: DataType.Double, value: 0.0 },
+      accessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+      userAccessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+    });
+
+    // Config/ProcessingFilter/HighCut (Double)
+    const filterHighCut = this.namespace.addVariable({
+      componentOf: processingFilterObject,
+      browseName: 'HighCut',
+      displayName: 'HighCut',
+      dataType: DataType.Double,
+      value: { dataType: DataType.Double, value: 0.0 },
+      accessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+      userAccessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+    });
+
+    // Config/ProcessingFilter/BandType (Int16)
+    const filterBandType = this.namespace.addVariable({
+      componentOf: processingFilterObject,
+      browseName: 'BandType',
+      displayName: 'BandType',
+      dataType: DataType.Int16,
+      value: { dataType: DataType.Int16, value: 0 },
+      accessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+      userAccessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+    });
+
+    // Config/SampleRate (UInt32) - sample rate in milliseconds
+    const sampleRateVar = this.namespace.addVariable({
+      componentOf: configObject,
+      browseName: 'SampleRate',
+      displayName: 'SampleRate',
+      dataType: DataType.UInt32,
+      value: { dataType: DataType.UInt32, value: config.sampleRate },
+      accessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+      userAccessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+    });
+
     // Store parameter reference
     this.parameters.set(config.index, {
       object: paramObject,
@@ -276,7 +382,20 @@ export class AddressSpaceBuilder {
       name: nameVar,
       parameterIndex: parameterIndexVar,
       enabled: enabledVar,
-      unit: unitVar,
+      physicalUnit: physicalUnitVar,
+      // Config/Processing
+      processingObject,
+      processingFunction,
+      processingWindowSize,
+      // Config/ProcessingFilter
+      processingFilterObject,
+      filterType,
+      filterOrder,
+      filterLowCut,
+      filterHighCut,
+      filterBandType,
+      // Config/SampleRate
+      sampleRate: sampleRateVar,
     });
 
     // Set up value binding to simulator (only for enabled parameters)
@@ -437,7 +556,7 @@ export class AddressSpaceBuilder {
       browseName: 'Manufacturer',
       displayName: 'Manufacturer',
       dataType: DataType.String,
-      value: { dataType: DataType.String, value: 'Framatome MSP Simulator' },
+      value: { dataType: DataType.String, value: 'OPC UA SPC Simulator' },
     });
 
     // Station/Heartbeat - writable by client for watchdog (using UInt32 for compatibility)

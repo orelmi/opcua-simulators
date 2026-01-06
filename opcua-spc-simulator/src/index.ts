@@ -101,7 +101,7 @@ program
       console.log('\nStation nodes:');
       console.log('  Objects/Station/Name                - Station name (auto-generated, e.g., "station-A3F2B1")');
       console.log('  Objects/Station/SerialNumber        - Serial number (e.g., "SN-20260106-B4C8A2")');
-      console.log('  Objects/Station/Manufacturer        - "Framatome MSP Simulator"');
+      console.log('  Objects/Station/Manufacturer        - "OPC UA SPC Simulator"');
       console.log('  Objects/Station/Heartbeat           - Watchdog (UInt64, writable by client)');
       console.log('  Objects/Station/HeartbeatAck        - Auto-copies Heartbeat value');
       console.log('  Objects/Station/State/Value         - Current state (0=NotConfigured, 1=Idle, 2=Started, 3=Stopped, 8=Configuring)');
@@ -130,7 +130,7 @@ program
       console.log('  Objects/P01/EngValue                 - Engineering value (real-time, not historized)');
       console.log('  Objects/P01/SampleIndex              - Sample counter');
       console.log('  Objects/P01/Enabled                  - Parameter enabled (true/false)');
-      console.log('  Objects/P01/Unit                     - Unit of measurement (A, V, °C, mm, etc.)');
+      console.log('  Objects/P01/PhysicalUnit             - Unit of measurement (A, V, °C, mm, etc.)');
       console.log('  Objects/P01/Config/EngRange/MinimumValue - LSL');
       console.log('  Objects/P01/Config/EngRange/MaximumValue - USL');
       console.log('\nPress Ctrl+C to stop the server');

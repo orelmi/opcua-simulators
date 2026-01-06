@@ -1,23 +1,18 @@
 # Dependencies
-node_modules/
+**/node_modules/
 
 # Build output
-dist/
+**/dist/
 
 # Data files
-data/
-*.db
-*.db-wal
-*.db-shm
+**/data/
 
 # Certificates
-certificates/
+**/certificates/
 
 # IDE
-.idea/
 .vscode/
-*.swp
-*.swo
+.idea/
 
 # OS
 .DS_Store
@@ -25,8 +20,3 @@ Thumbs.db
 
 # Logs
 *.log
-npm-debug.log*
-
-# Environment
-.env
-.env.local

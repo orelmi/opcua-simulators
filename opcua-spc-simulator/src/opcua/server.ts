@@ -97,7 +97,7 @@ export class CCSimulatorServer {
         productName: 'OPC UA CC Simulator',
         buildNumber: '1.0.0',
         buildDate: new Date(),
-        manufacturerName: 'Framatome MSP Simulator',
+        manufacturerName: 'OPC UA SPC Simulator',
         softwareVersion: '1.0.0',
       },
       serverInfo: {
