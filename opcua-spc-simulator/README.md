@@ -69,6 +69,8 @@ Le serveur démarre en état `NotConfigured`. Workflow :
 | `-d, --db <path>` | Chemin de la base SQLite | ./data/cc_history.db |
 | `-v, --verbose` | Activer les logs détaillés | false |
 | `--list-scenarios` | Lister les scénarios disponibles | - |
+| `-n, --namespace-index <index>` | Index du namespace pour les nœuds personnalisés | 1 |
+| `--node-id-format <format>` | Format des NodeId: "string" (ns=X;s=Path) ou "numeric" (ns=X;i=NNN) | string |
 
 ### Initialiser la base de données avec des données historiques
 
@@ -126,6 +128,30 @@ Les 24 paramètres représentent des mesures typiques d'un processus de soudage 
 | `increasing_variance` | Variance croissante | Processus instable |
 | `nelson_rules` | Test des règles de Nelson | Violations multiples |
 | `realistic` | Combinaison d'effets réalistes | Simulation réaliste |
+
+## Format des NodeId
+
+Par défaut, les NodeId sont générés au format string avec le chemin du nœud :
+
+```
+ns=1;s=Station.Name
+ns=1;s=P01.SampleValue
+ns=1;s=P01.Config.EngRange.MinimumValue
+```
+
+Pour utiliser des NodeId numériques (compatible XML NodeSet) :
+
+```bash
+npm start -- --node-id-format numeric
+# Génère: ns=1;i=6000, ns=1;i=6001, ...
+```
+
+Pour changer l'index du namespace :
+
+```bash
+npm start -- --namespace-index 2
+# Génère: ns=2;s=Station.Name, ...
+```
 
 ## Structure des nœuds OPC UA
 

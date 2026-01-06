@@ -17,12 +17,20 @@ import {
   AccessLevelFlag,
   HistoryData,
 } from 'node-opcua';
-import { ParameterConfig, AcquisitionStatus, TriggerType } from '../types';
+import { ParameterConfig, AcquisitionStatus, TriggerType, CLIOptions, NodeIdFormat } from '../types';
 import { SQLiteHistoryStore } from '../database/sqlite-store';
 import { ParameterSimulator, ParameterState } from '../simulation/parameter-simulator';
 import { StationStateMachine } from '../simulation/station-state-machine';
 
 const NAMESPACE_URI = 'http://opcua-simulators.local/UA/msp';
+
+/**
+ * NodeId generator options
+ */
+interface NodeIdGeneratorOptions {
+  namespaceIndex: number;
+  format: NodeIdFormat;
+}
 
 export interface CCParameter {
   object: UAObject;
@@ -94,18 +102,37 @@ export class AddressSpaceBuilder {
   private simulator: ParameterSimulator;
   private stateMachine: StationStateMachine;
   private stationNodes: StationNodes | null = null;
+  private options: CLIOptions;
+  private numericIdCounter: number = 6000; // Start at 6000 for custom nodes
 
   constructor(
     addressSpace: AddressSpace,
     historyStore: SQLiteHistoryStore,
     simulator: ParameterSimulator,
-    stateMachine: StationStateMachine
+    stateMachine: StationStateMachine,
+    options: CLIOptions
   ) {
     this.addressSpace = addressSpace;
     this.namespace = addressSpace.registerNamespace(NAMESPACE_URI);
     this.historyStore = historyStore;
     this.simulator = simulator;
     this.stateMachine = stateMachine;
+    this.options = options;
+  }
+
+  /**
+   * Generate a NodeId based on the configured format
+   * @param path The path of the node (e.g., "Station.Name" or "P01.SampleValue")
+   * @returns NodeId string in format s=Path or i=NNN (namespace is handled by the namespace object)
+   */
+  private generateNodeId(path: string): string {
+    if (this.options.nodeIdFormat === 'string') {
+      // Use string NodeId format: s=Path.To.Node
+      return `s=${path}`;
+    } else {
+      // Use numeric NodeId format: i=NNNNN
+      return `i=${this.numericIdCounter++}`;
+    }
   }
 
   /**
@@ -161,9 +188,11 @@ export class AddressSpaceBuilder {
    */
   private createParameter(config: ParameterConfig): void {
     const objectsFolder = this.addressSpace.rootFolder.objects;
+    const pName = config.name; // e.g., "P01"
 
     // Create parameter object
     const paramObject = this.namespace.addObject({
+      nodeId: this.generateNodeId(pName),
       organizedBy: objectsFolder,
       browseName: config.name,
       displayName: config.name,
@@ -171,6 +200,7 @@ export class AddressSpaceBuilder {
 
     // Create SampleValue variable with historization
     const sampleValue = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.SampleValue`),
       componentOf: paramObject,
       browseName: 'SampleValue',
       displayName: 'SampleValue',
@@ -186,6 +216,7 @@ export class AddressSpaceBuilder {
 
     // Create SampleIndex variable (using UInt32 for simplicity)
     const sampleIndex = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.SampleIndex`),
       componentOf: paramObject,
       browseName: 'SampleIndex',
       displayName: 'SampleIndex',
@@ -195,6 +226,7 @@ export class AddressSpaceBuilder {
 
     // Create EngValue variable (no historization - real-time only)
     const engValue = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.EngValue`),
       componentOf: paramObject,
       browseName: 'EngValue',
       displayName: 'EngValue',
@@ -207,6 +239,7 @@ export class AddressSpaceBuilder {
 
     // Create Name variable (display name like "WeldCurrent")
     const nameVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Name`),
       componentOf: paramObject,
       browseName: 'Name',
       displayName: 'Name',
@@ -216,6 +249,7 @@ export class AddressSpaceBuilder {
 
     // Create ParameterIndex variable
     const parameterIndexVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.ParameterIndex`),
       componentOf: paramObject,
       browseName: 'ParameterIndex',
       displayName: 'ParameterIndex',
@@ -225,6 +259,7 @@ export class AddressSpaceBuilder {
 
     // Create Enabled variable
     const enabledVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Enabled`),
       componentOf: paramObject,
       browseName: 'Enabled',
       displayName: 'Enabled',
@@ -234,6 +269,7 @@ export class AddressSpaceBuilder {
 
     // Create PhysicalUnit variable
     const physicalUnitVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.PhysicalUnit`),
       componentOf: paramObject,
       browseName: 'PhysicalUnit',
       displayName: 'PhysicalUnit',
@@ -243,6 +279,7 @@ export class AddressSpaceBuilder {
 
     // Create Config sub-object with limits
     const configObject = this.namespace.addObject({
+      nodeId: this.generateNodeId(`${pName}.Config`),
       componentOf: paramObject,
       browseName: 'Config',
       displayName: 'Config',
@@ -250,12 +287,14 @@ export class AddressSpaceBuilder {
 
     // Create EngRange (tolerance limits)
     const engRange = this.namespace.addObject({
+      nodeId: this.generateNodeId(`${pName}.Config.EngRange`),
       componentOf: configObject,
       browseName: 'EngRange',
       displayName: 'EngRange',
     });
 
     this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Config.EngRange.MinimumValue`),
       componentOf: engRange,
       browseName: 'MinimumValue',
       displayName: 'MinimumValue',
@@ -264,6 +303,7 @@ export class AddressSpaceBuilder {
     });
 
     this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Config.EngRange.MaximumValue`),
       componentOf: engRange,
       browseName: 'MaximumValue',
       displayName: 'MaximumValue',
@@ -273,6 +313,7 @@ export class AddressSpaceBuilder {
 
     // Create Config/Processing object (CCProcessingConfigType)
     const processingObject = this.namespace.addObject({
+      nodeId: this.generateNodeId(`${pName}.Config.Processing`),
       componentOf: configObject,
       browseName: 'Processing',
       displayName: 'Processing',
@@ -280,6 +321,7 @@ export class AddressSpaceBuilder {
 
     // Config/Processing/Function (UInt16 - ProcessingFunctionEnum: None=0, Average=1, MovingAverage=2)
     const processingFunction = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Config.Processing.Function`),
       componentOf: processingObject,
       browseName: 'Function',
       displayName: 'Function',
@@ -291,6 +333,7 @@ export class AddressSpaceBuilder {
 
     // Config/Processing/WindowSize (UInt32)
     const processingWindowSize = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Config.Processing.WindowSize`),
       componentOf: processingObject,
       browseName: 'WindowSize',
       displayName: 'WindowSize',
@@ -302,6 +345,7 @@ export class AddressSpaceBuilder {
 
     // Create Config/ProcessingFilter object (CCProcessingFilterType)
     const processingFilterObject = this.namespace.addObject({
+      nodeId: this.generateNodeId(`${pName}.Config.ProcessingFilter`),
       componentOf: configObject,
       browseName: 'ProcessingFilter',
       displayName: 'ProcessingFilter',
@@ -309,6 +353,7 @@ export class AddressSpaceBuilder {
 
     // Config/ProcessingFilter/FilterType (Int16)
     const filterType = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Config.ProcessingFilter.FilterType`),
       componentOf: processingFilterObject,
       browseName: 'FilterType',
       displayName: 'FilterType',
@@ -320,6 +365,7 @@ export class AddressSpaceBuilder {
 
     // Config/ProcessingFilter/Order (Int16)
     const filterOrder = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Config.ProcessingFilter.Order`),
       componentOf: processingFilterObject,
       browseName: 'Order',
       displayName: 'Order',
@@ -331,6 +377,7 @@ export class AddressSpaceBuilder {
 
     // Config/ProcessingFilter/LowCut (Double)
     const filterLowCut = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Config.ProcessingFilter.LowCut`),
       componentOf: processingFilterObject,
       browseName: 'LowCut',
       displayName: 'LowCut',
@@ -342,6 +389,7 @@ export class AddressSpaceBuilder {
 
     // Config/ProcessingFilter/HighCut (Double)
     const filterHighCut = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Config.ProcessingFilter.HighCut`),
       componentOf: processingFilterObject,
       browseName: 'HighCut',
       displayName: 'HighCut',
@@ -353,6 +401,7 @@ export class AddressSpaceBuilder {
 
     // Config/ProcessingFilter/BandType (Int16)
     const filterBandType = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Config.ProcessingFilter.BandType`),
       componentOf: processingFilterObject,
       browseName: 'BandType',
       displayName: 'BandType',
@@ -364,6 +413,7 @@ export class AddressSpaceBuilder {
 
     // Config/SampleRate (UInt32) - sample rate in milliseconds
     const sampleRateVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Config.SampleRate`),
       componentOf: configObject,
       browseName: 'SampleRate',
       displayName: 'SampleRate',
@@ -527,6 +577,7 @@ export class AddressSpaceBuilder {
 
     // Create Station object
     const stationObject = this.namespace.addObject({
+      nodeId: this.generateNodeId('Station'),
       organizedBy: objectsFolder,
       browseName: 'Station',
       displayName: 'Station',
@@ -534,6 +585,7 @@ export class AddressSpaceBuilder {
 
     // Station/Name - auto-generated unique identifier
     const nameVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Name'),
       componentOf: stationObject,
       browseName: 'Name',
       displayName: 'Name',
@@ -543,6 +595,7 @@ export class AddressSpaceBuilder {
 
     // Station/SerialNumber - auto-generated serial number
     const serialNumberVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.SerialNumber'),
       componentOf: stationObject,
       browseName: 'SerialNumber',
       displayName: 'SerialNumber',
@@ -552,6 +605,7 @@ export class AddressSpaceBuilder {
 
     // Station/Manufacturer
     const manufacturerVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Manufacturer'),
       componentOf: stationObject,
       browseName: 'Manufacturer',
       displayName: 'Manufacturer',
@@ -561,6 +615,7 @@ export class AddressSpaceBuilder {
 
     // Station/Heartbeat - writable by client for watchdog (using UInt32 for compatibility)
     const heartbeatVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Heartbeat'),
       componentOf: stationObject,
       browseName: 'Heartbeat',
       displayName: 'Heartbeat',
@@ -572,6 +627,7 @@ export class AddressSpaceBuilder {
 
     // Station/HeartbeatAck - auto-copies Heartbeat value
     const heartbeatAckVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.HeartbeatAck'),
       componentOf: stationObject,
       browseName: 'HeartbeatAck',
       displayName: 'HeartbeatAck',
@@ -595,6 +651,7 @@ export class AddressSpaceBuilder {
 
     // Create State sub-object (AcquisitionStateType)
     const stateObj = this.namespace.addObject({
+      nodeId: this.generateNodeId('Station.State'),
       componentOf: stationObject,
       browseName: 'State',
       displayName: 'State',
@@ -602,6 +659,7 @@ export class AddressSpaceBuilder {
 
     // State/Value (UInt16) - acquisition status
     const statusValue = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.State.Value'),
       componentOf: stateObj,
       browseName: 'Value',
       displayName: 'Value',
@@ -611,6 +669,7 @@ export class AddressSpaceBuilder {
 
     // State/StartedAt (DateTime)
     const startedAt = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.State.StartedAt'),
       componentOf: stateObj,
       browseName: 'StartedAt',
       displayName: 'StartedAt',
@@ -620,6 +679,7 @@ export class AddressSpaceBuilder {
 
     // State/StoppedAt (DateTime)
     const stoppedAt = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.State.StoppedAt'),
       componentOf: stateObj,
       browseName: 'StoppedAt',
       displayName: 'StoppedAt',
@@ -629,6 +689,7 @@ export class AddressSpaceBuilder {
 
     // Create Command sub-object with boolean commands
     const commandObject = this.namespace.addObject({
+      nodeId: this.generateNodeId('Station.Command'),
       componentOf: stationObject,
       browseName: 'Command',
       displayName: 'Command',
@@ -636,6 +697,7 @@ export class AddressSpaceBuilder {
 
     // Command/Configure (Boolean)
     const configureCmd = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Command.Configure'),
       componentOf: commandObject,
       browseName: 'Configure',
       displayName: 'Configure',
@@ -647,6 +709,7 @@ export class AddressSpaceBuilder {
 
     // Command/Start (Boolean)
     const startCmd = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Command.Start'),
       componentOf: commandObject,
       browseName: 'Start',
       displayName: 'Start',
@@ -658,6 +721,7 @@ export class AddressSpaceBuilder {
 
     // Command/Stop (Boolean)
     const stopCmd = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Command.Stop'),
       componentOf: commandObject,
       browseName: 'Stop',
       displayName: 'Stop',
@@ -669,6 +733,7 @@ export class AddressSpaceBuilder {
 
     // Command/Reset (Boolean)
     const resetCmd = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Command.Reset'),
       componentOf: commandObject,
       browseName: 'Reset',
       displayName: 'Reset',
@@ -701,6 +766,7 @@ export class AddressSpaceBuilder {
 
     // Create Config sub-object
     const configObject = this.namespace.addObject({
+      nodeId: this.generateNodeId('Station.Config'),
       componentOf: stationObject,
       browseName: 'Config',
       displayName: 'Config',
@@ -708,12 +774,14 @@ export class AddressSpaceBuilder {
 
     // Config/StartCondition object
     const startCondition = this.namespace.addObject({
+      nodeId: this.generateNodeId('Station.Config.StartCondition'),
       componentOf: configObject,
       browseName: 'StartCondition',
       displayName: 'StartCondition',
     });
 
     this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Config.StartCondition.Type'),
       componentOf: startCondition,
       browseName: 'Type',
       displayName: 'Type',
@@ -724,6 +792,7 @@ export class AddressSpaceBuilder {
     });
 
     this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Config.StartCondition.ParameterIndex'),
       componentOf: startCondition,
       browseName: 'ParameterIndex',
       displayName: 'ParameterIndex',
@@ -735,12 +804,14 @@ export class AddressSpaceBuilder {
 
     // Config/StopCondition object
     const stopCondition = this.namespace.addObject({
+      nodeId: this.generateNodeId('Station.Config.StopCondition'),
       componentOf: configObject,
       browseName: 'StopCondition',
       displayName: 'StopCondition',
     });
 
     this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Config.StopCondition.Type'),
       componentOf: stopCondition,
       browseName: 'Type',
       displayName: 'Type',
@@ -751,6 +822,7 @@ export class AddressSpaceBuilder {
     });
 
     this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Config.StopCondition.ParameterIndex'),
       componentOf: stopCondition,
       browseName: 'ParameterIndex',
       displayName: 'ParameterIndex',
@@ -762,6 +834,7 @@ export class AddressSpaceBuilder {
 
     // Create Metrics sub-object
     const metricsObject = this.namespace.addObject({
+      nodeId: this.generateNodeId('Station.Metrics'),
       componentOf: stationObject,
       browseName: 'Metrics',
       displayName: 'Metrics',
@@ -771,6 +844,7 @@ export class AddressSpaceBuilder {
 
     // Metrics/CycleTime - cycle time in milliseconds (simulated)
     const cycleTimeVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Metrics.CycleTime'),
       componentOf: metricsObject,
       browseName: 'CycleTime',
       displayName: 'CycleTime',
@@ -780,6 +854,7 @@ export class AddressSpaceBuilder {
 
     // Metrics/Info1 - random info value (simulated)
     const info1Var = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Metrics.Info1'),
       componentOf: metricsObject,
       browseName: 'Info1',
       displayName: 'Info1',
@@ -789,6 +864,7 @@ export class AddressSpaceBuilder {
 
     // Metrics/Info2 - info value (no simulation, static)
     const info2Var = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Metrics.Info2'),
       componentOf: metricsObject,
       browseName: 'Info2',
       displayName: 'Info2',
@@ -798,6 +874,7 @@ export class AddressSpaceBuilder {
 
     // Metrics/StartupTime - server startup timestamp
     const startupTimeVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Metrics.StartupTime'),
       componentOf: metricsObject,
       browseName: 'StartupTime',
       displayName: 'StartupTime',
@@ -807,6 +884,7 @@ export class AddressSpaceBuilder {
 
     // Metrics/StorageFillPercentage - storage fill percentage (simulated)
     const storageFillPercentageVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Metrics.StorageFillPercentage'),
       componentOf: metricsObject,
       browseName: 'StorageFillPercentage',
       displayName: 'StorageFillPercentage',
@@ -816,6 +894,7 @@ export class AddressSpaceBuilder {
 
     // Metrics/UpTimeSeconds - uptime in seconds since startup
     const upTimeSecondsVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Metrics.UpTimeSeconds'),
       componentOf: metricsObject,
       browseName: 'UpTimeSeconds',
       displayName: 'UpTimeSeconds',
@@ -825,6 +904,7 @@ export class AddressSpaceBuilder {
 
     // Create Context sub-object
     const contextObject = this.namespace.addObject({
+      nodeId: this.generateNodeId('Station.Context'),
       componentOf: stationObject,
       browseName: 'Context',
       displayName: 'Context',
@@ -832,6 +912,7 @@ export class AddressSpaceBuilder {
 
     // Context/DoubleInfo1 - perpetual revolution 0-360° (simulated)
     const doubleInfo1Var = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.DoubleInfo1'),
       componentOf: contextObject,
       browseName: 'DoubleInfo1',
       displayName: 'DoubleInfo1',
@@ -841,6 +922,7 @@ export class AddressSpaceBuilder {
 
     // Context/DoubleInfo2 - no simulation
     const doubleInfo2Var = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.DoubleInfo2'),
       componentOf: contextObject,
       browseName: 'DoubleInfo2',
       displayName: 'DoubleInfo2',
@@ -850,6 +932,7 @@ export class AddressSpaceBuilder {
 
     // Context/DoubleInfo3 - no simulation
     const doubleInfo3Var = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.DoubleInfo3'),
       componentOf: contextObject,
       browseName: 'DoubleInfo3',
       displayName: 'DoubleInfo3',
@@ -859,6 +942,7 @@ export class AddressSpaceBuilder {
 
     // Context/OperationId - writable by OPC UA client
     const operationIdVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.OperationId'),
       componentOf: contextObject,
       browseName: 'OperationId',
       displayName: 'OperationId',
@@ -870,6 +954,7 @@ export class AddressSpaceBuilder {
 
     // Context/ProductionOrderId - writable by OPC UA client
     const productionOrderIdVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.ProductionOrderId'),
       componentOf: contextObject,
       browseName: 'ProductionOrderId',
       displayName: 'ProductionOrderId',
@@ -881,6 +966,7 @@ export class AddressSpaceBuilder {
 
     // Context/RoutingId - writable by OPC UA client
     const routingIdVar = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.RoutingId'),
       componentOf: contextObject,
       browseName: 'RoutingId',
       displayName: 'RoutingId',
@@ -892,6 +978,7 @@ export class AddressSpaceBuilder {
 
     // Context/SpecDouble1 - writable by OPC UA client
     const specDouble1Var = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.SpecDouble1'),
       componentOf: contextObject,
       browseName: 'SpecDouble1',
       displayName: 'SpecDouble1',
@@ -903,6 +990,7 @@ export class AddressSpaceBuilder {
 
     // Context/SpecDouble2 - writable by OPC UA client
     const specDouble2Var = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.SpecDouble2'),
       componentOf: contextObject,
       browseName: 'SpecDouble2',
       displayName: 'SpecDouble2',
@@ -914,6 +1002,7 @@ export class AddressSpaceBuilder {
 
     // Context/SpecDouble3 - writable by OPC UA client
     const specDouble3Var = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.SpecDouble3'),
       componentOf: contextObject,
       browseName: 'SpecDouble3',
       displayName: 'SpecDouble3',
@@ -925,6 +1014,7 @@ export class AddressSpaceBuilder {
 
     // Context/SpecString1 - writable by OPC UA client
     const specString1Var = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.SpecString1'),
       componentOf: contextObject,
       browseName: 'SpecString1',
       displayName: 'SpecString1',
@@ -936,6 +1026,7 @@ export class AddressSpaceBuilder {
 
     // Context/SpecString2 - writable by OPC UA client
     const specString2Var = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.SpecString2'),
       componentOf: contextObject,
       browseName: 'SpecString2',
       displayName: 'SpecString2',
@@ -947,6 +1038,7 @@ export class AddressSpaceBuilder {
 
     // Context/SpecString3 - writable by OPC UA client
     const specString3Var = this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.SpecString3'),
       componentOf: contextObject,
       browseName: 'SpecString3',
       displayName: 'SpecString3',

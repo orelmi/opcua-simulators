@@ -134,7 +134,8 @@ export class CCSimulatorServer {
       addressSpace,
       this.historyStore,
       this.simulator,
-      this.stateMachine
+      this.stateMachine,
+      this.options
     );
     builder.build(this.parameterConfigs);
 

@@ -65,6 +65,13 @@ export interface HistoricalDataPoint {
   engValue: number;
 }
 
+/**
+ * NodeId format type
+ * - 'string': ns=X;s=Path.To.Variable (e.g., ns=1;s=Station.Name)
+ * - 'numeric': ns=X;i=NNNNN (auto-incremented numeric IDs)
+ */
+export type NodeIdFormat = 'string' | 'numeric';
+
 export interface CLIOptions {
   /** OPC UA server port */
   port: number;
@@ -88,6 +95,10 @@ export interface CLIOptions {
   verbose: boolean;
   /** Target value for all parameters */
   target: number;
+  /** Namespace index for custom nodes (default: 1) */
+  namespaceIndex: number;
+  /** NodeId format: 'string' for ns=X;s=Path or 'numeric' for ns=X;i=NNN */
+  nodeIdFormat: NodeIdFormat;
 }
 
 export enum AcquisitionStatus {

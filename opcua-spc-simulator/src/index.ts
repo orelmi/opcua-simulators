@@ -7,7 +7,7 @@
 
 import { Command } from 'commander';
 import { CCSimulatorServer } from './opcua/server';
-import { CLIOptions } from './types';
+import { CLIOptions, NodeIdFormat } from './types';
 import { listScenarios } from './simulation/scenarios';
 import path from 'path';
 import fs from 'fs';
@@ -32,6 +32,8 @@ program
   .option('-d, --db <path>', 'SQLite database path', './data/cc_history.db')
   .option('-v, --verbose', 'Enable verbose logging', false)
   .option('--list-scenarios', 'List available simulation scenarios')
+  .option('-n, --namespace-index <index>', 'Namespace index for custom nodes', '1')
+  .option('--node-id-format <format>', 'NodeId format: "string" (ns=X;s=Path) or "numeric" (ns=X;i=NNN)', 'string')
   .action(async (options) => {
     // Handle list scenarios
     if (options.listScenarios) {
@@ -44,6 +46,9 @@ program
       console.log('');
       process.exit(0);
     }
+
+    // Validate NodeId format
+    const nodeIdFormat: NodeIdFormat = options.nodeIdFormat === 'numeric' ? 'numeric' : 'string';
 
     // Parse and validate options
     const cliOptions: CLIOptions = {
@@ -58,6 +63,8 @@ program
       engFrequency: parseInt(options.engFrequency, 10),
       dbPath: options.db,
       verbose: options.verbose,
+      namespaceIndex: parseInt(options.namespaceIndex, 10),
+      nodeIdFormat,
     };
 
     // Validate parameter count
