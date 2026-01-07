@@ -1418,7 +1418,7 @@ export class DashboardServer {
       // Update command buttons
       const status = data.stationState.status;
       document.getElementById('btnConfigure').disabled = status !== 0;
-      document.getElementById('btnStart').disabled = status !== 1;
+      document.getElementById('btnStart').disabled = status !== 1 && status !== 3;
       document.getElementById('btnStop').disabled = status !== 2;
       document.getElementById('btnReset').disabled = status !== 3;
 

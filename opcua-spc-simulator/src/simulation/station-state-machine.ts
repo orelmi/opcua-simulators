@@ -15,7 +15,8 @@
  * 2. Configuring -> (auto) -> Idle
  * 3. Idle -> Start command -> AcquisitionStarted
  * 4. AcquisitionStarted -> Stop command -> AcquisitionStopped
- * 5. AcquisitionStopped -> Reset command -> Idle (then can Start again)
+ * 5. AcquisitionStopped -> Start command -> AcquisitionStarted (direct restart)
+ * 5b. AcquisitionStopped -> Reset command -> Idle (alternative)
  *
  * Transitions:
  * - NotConfigured -> Configuring (Configure command)
@@ -25,6 +26,7 @@
  * - Idle -> AcquisitionStarted (Start command)
  * - Idle -> Configuring (Configure command - reconfigure)
  * - AcquisitionStarted -> AcquisitionStopped (Stop command)
+ * - AcquisitionStopped -> AcquisitionStarted (Start command - direct restart)
  * - AcquisitionStopped -> Idle (Reset command)
  */
 
@@ -180,10 +182,15 @@ export class StationStateMachine extends EventEmitter {
 
   /**
    * Handle START_ACQUISITION event
-   * Valid from: Idle only (must Reset from AcquisitionStopped first)
+   * Valid from: Idle or AcquisitionStopped (direct restart without Reset)
    */
   private handleStartAcquisition(trigger: TriggerType): boolean {
-    if (this.state.status !== AcquisitionStatus.Idle) {
+    const validStates = [
+      AcquisitionStatus.Idle,
+      AcquisitionStatus.AcquisitionStopped,
+    ];
+
+    if (!validStates.includes(this.state.status)) {
       return false;
     }
 
