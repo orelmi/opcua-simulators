@@ -404,15 +404,42 @@ export class DashboardServer {
       this.updateInterval = null;
     }
 
-    // Close all WebSocket connections
+    // Close all WebSocket connections with code 1001 (going away)
     for (const client of this.clients) {
-      client.close();
+      try {
+        client.close(1001, 'Server shutting down');
+        client.terminate(); // Force close if close() doesn't work
+      } catch {
+        // Ignore errors during close
+      }
     }
     this.clients.clear();
 
-    return new Promise((resolve) => {
-      this.server.close(() => {
-        console.log('Dashboard server stopped');
+    // Close WebSocket server
+    await new Promise<void>((resolve) => {
+      this.wss.close((err) => {
+        if (err) {
+          console.error('Error closing WebSocket server:', err);
+        }
+        resolve();
+      });
+    });
+
+    // Close HTTP server with timeout
+    await new Promise<void>((resolve) => {
+      // Set a timeout in case server.close() hangs
+      const timeout = setTimeout(() => {
+        console.warn('Dashboard server close timeout, forcing...');
+        resolve();
+      }, 2000);
+
+      this.server.close((err) => {
+        clearTimeout(timeout);
+        if (err) {
+          console.error('Error closing dashboard server:', err);
+        } else {
+          console.log('Dashboard server stopped');
+        }
         resolve();
       });
     });

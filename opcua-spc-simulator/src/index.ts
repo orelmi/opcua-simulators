@@ -117,14 +117,39 @@ program
     const server = new CCSimulatorServer(cliOptions);
 
     // Handle graceful shutdown
-    const shutdown = async () => {
-      console.log('\nShutting down...');
-      await server.stop();
-      process.exit(0);
+    let isShuttingDown = false;
+    const shutdown = async (signal: string) => {
+      if (isShuttingDown) {
+        console.log('\nForce exit...');
+        process.exit(1);
+      }
+      isShuttingDown = true;
+      console.log(`\nReceived ${signal}, shutting down...`);
+
+      // Force exit after timeout
+      const forceExitTimeout = setTimeout(() => {
+        console.error('Shutdown timeout, forcing exit...');
+        process.exit(1);
+      }, 5000);
+      forceExitTimeout.unref(); // Don't keep process alive just for this timer
+
+      try {
+        await server.stop();
+        clearTimeout(forceExitTimeout);
+        process.exit(0);
+      } catch (error) {
+        console.error('Error during shutdown:', error);
+        clearTimeout(forceExitTimeout);
+        process.exit(1);
+      }
     };
 
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    // Windows: handle Ctrl+Break and window close
+    if (process.platform === 'win32') {
+      process.on('SIGBREAK', () => shutdown('SIGBREAK'));
+    }
 
     try {
       // Wait for OPC UA port to become available
