@@ -515,9 +515,9 @@ export class DashboardServer {
       border-radius: 5px;
       cursor: pointer;
       font-weight: 600;
-      transition: all 0.2s;
+      transition: background-color 0.2s ease, transform 0.2s ease;
     }
-    button:hover {
+    button:hover:not(:disabled) {
       background: #3db892;
       transform: translateY(-1px);
     }
@@ -526,11 +526,12 @@ export class DashboardServer {
       color: #666;
       cursor: not-allowed;
       transform: none;
+      transition: none;
     }
     button.danger {
       background: #e74c3c;
     }
-    button.danger:hover {
+    button.danger:hover:not(:disabled) {
       background: #c0392b;
     }
     select {
