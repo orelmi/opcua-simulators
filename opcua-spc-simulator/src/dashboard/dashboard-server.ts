@@ -29,11 +29,16 @@ export interface OpcuaClientsAccessor {
   disconnectAllClients(): number;
 }
 
+export interface PersistenceStore {
+  clearPersistedState(): void;
+}
+
 export interface DashboardOptions {
   port: number;
   simulator: ParameterSimulator;
   stateMachine: StationStateMachine;
   opcuaServer?: OpcuaClientsAccessor;
+  store?: PersistenceStore;
 }
 
 interface DashboardState {
@@ -278,6 +283,23 @@ export class DashboardServer {
         res.json({ success: true, disconnectedCount });
       } catch (error) {
         res.status(500).json({ error: `Failed to disconnect clients: ${error}` });
+      }
+    });
+
+    // API: Reset persistence (clear saved state)
+    this.app.post('/api/reset-persistence', (_req: Request, res: Response) => {
+      if (!this.options.store) {
+        return res.status(400).json({ error: 'Persistence store not available' });
+      }
+
+      try {
+        this.options.store.clearPersistedState();
+        // Also reset the state machine to NotConfigured
+        this.options.stateMachine.forceState(AcquisitionStatus.NotConfigured);
+        this.broadcastState();
+        res.json({ success: true, message: 'Persistence cleared. Restart server to start fresh.' });
+      } catch (error) {
+        res.status(500).json({ error: `Failed to reset persistence: ${error}` });
       }
     });
 
@@ -990,6 +1012,7 @@ export class DashboardServer {
           </div>
           <div id="clientsList" style="margin-top: 10px; font-size: 0.85rem; max-height: 120px; overflow-y: auto;"></div>
           <button onclick="disconnectClients()" class="danger" style="width: 100%; margin-top: 10px;">Disconnect All</button>
+          <button onclick="resetPersistence()" style="width: 100%; margin-top: 10px; background: #555;">Reset Persistence</button>
         </div>
       </div>
 
@@ -1523,6 +1546,20 @@ export class DashboardServer {
       }
     }
 
+async function resetPersistence() {
+      if (!confirm('Réinitialiser la persistance ? Le serveur redémarrera à zéro au prochain lancement.')) return;
+      try {
+        const res = await fetch('/api/reset-persistence', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          alert(data.message);
+        } else {
+          alert('Erreur: ' + data.error);
+        }
+      } catch (error) {
+        alert('Erreur: ' + error.message);
+      }
+    }
     function connectWebSocket() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(protocol + '//' + window.location.host);

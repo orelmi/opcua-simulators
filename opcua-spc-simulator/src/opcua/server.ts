@@ -266,6 +266,7 @@ export class CCSimulatorServer {
         simulator: this.simulator,
         stateMachine: this.stateMachine,
         opcuaServer: this,
+        store: this.historyStore,
       });
       await this.dashboard.start();
     }
