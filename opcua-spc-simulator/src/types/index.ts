@@ -41,6 +41,33 @@ export interface ParameterConfig {
   enabled: boolean;
 }
 
+/**
+ * Scenario parameter definition for UI controls
+ */
+export interface ScenarioParamDef {
+  /** Parameter key */
+  key: string;
+  /** Display label */
+  label: string;
+  /** Parameter type */
+  type: 'range' | 'number';
+  /** Minimum value */
+  min: number;
+  /** Maximum value */
+  max: number;
+  /** Step increment */
+  step: number;
+  /** Default value */
+  default: number;
+  /** Unit suffix for display */
+  unit?: string;
+}
+
+/**
+ * Scenario parameters - current values keyed by parameter name
+ */
+export type ScenarioParams = Record<string, number>;
+
 export interface SimulationScenario {
   /** Scenario name */
   name: string;
@@ -48,8 +75,12 @@ export interface SimulationScenario {
   description: string;
   /** Duration in milliseconds */
   duration: number;
-  /** Generator function for values */
-  generator: (time: number, config: ParameterConfig) => number;
+  /** Generator function for values - receives optional params */
+  generator: (time: number, config: ParameterConfig, params?: ScenarioParams) => number;
+  /** Configurable parameters for this scenario */
+  paramDefs?: ScenarioParamDef[];
+  /** Default parameter values */
+  defaultParams?: ScenarioParams;
 }
 
 export interface HistoricalDataPoint {
@@ -73,14 +104,59 @@ export interface HistoricalDataPoint {
  */
 export type NodeIdFormat = 'string' | 'numeric';
 
+/**
+ * Parameter configuration from config file (optional overrides)
+ */
+export interface ParameterConfigOverride {
+  /** Parameter index (1-24) - required to identify which parameter to configure */
+  index: number;
+  /** Override display name */
+  displayName?: string;
+  /** Override description */
+  description?: string;
+  /** Override unit */
+  unit?: string;
+  /** Override target value */
+  target?: number;
+  /** Override USL (absolute value) */
+  usl?: number;
+  /** Override LSL (absolute value) */
+  lsl?: number;
+  /** Override UCL (absolute value) */
+  ucl?: number;
+  /** Override LCL (absolute value) */
+  lcl?: number;
+  /** Override CL (center line, defaults to target) */
+  cl?: number;
+  /** Whether this parameter is enabled */
+  enabled?: boolean;
+}
+
+/**
+ * Configuration file structure for parameters
+ */
+export interface ParametersConfigFile {
+  /** Optional global defaults that apply to all parameters unless overridden */
+  defaults?: {
+    /** Default USL offset from target in % (default: 5) */
+    uslOffsetPercent?: number;
+    /** Default LSL offset from target in % (default: 5) */
+    lslOffsetPercent?: number;
+    /** Control limits as percentage of tolerance range (default: 75) */
+    controlLimitPercent?: number;
+  };
+  /** Per-parameter configuration overrides */
+  parameters?: ParameterConfigOverride[];
+}
+
 export interface CLIOptions {
   /** OPC UA server port */
   port: number;
   /** Number of parameters to simulate (1-24) */
   parameterCount: number;
-  /** Global USL offset from target (%) */
+  /** Global USL offset from target (%) - used when no config file */
   uslOffset: number;
-  /** Global LSL offset from target (%) */
+  /** Global LSL offset from target (%) - used when no config file */
   lslOffset: number;
   /** Simulation scenario name */
   scenario: string;
@@ -94,7 +170,7 @@ export interface CLIOptions {
   dbPath: string;
   /** Enable verbose logging */
   verbose: boolean;
-  /** Target value for all parameters */
+  /** Target value for all parameters - used when no config file */
   target: number;
   /** Namespace index for custom nodes (default: 2, use 1 for server namespace) */
   namespaceIndex: number;
@@ -102,6 +178,8 @@ export interface CLIOptions {
   nodeIdFormat: NodeIdFormat;
   /** Web dashboard port (0 to disable) */
   dashboardPort: number;
+  /** Path to parameters configuration file (JSON) */
+  configFile?: string;
 }
 
 export enum AcquisitionStatus {

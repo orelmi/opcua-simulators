@@ -1,0 +1,35 @@
+{
+  "defaults": {
+    "uslOffsetPercent": 5,
+    "lslOffsetPercent": 5,
+    "controlLimitPercent": 75
+  },
+  "parameters": [
+    {
+      "index": 1,
+      "displayName": "WeldCurrent",
+      "description": "Courant de soudage",
+      "unit": "A",
+      "target": 200,
+      "usl": 220,
+      "lsl": 180,
+      "ucl": 215,
+      "lcl": 185
+    },
+    {
+      "index": 2,
+      "displayName": "ArcVoltage",
+      "description": "Tension d'arc",
+      "unit": "V",
+      "target": 28,
+      "usl": 32,
+      "lsl": 24,
+      "ucl": 30,
+      "lcl": 26
+    },
+    {
+      "index": 3,
+      "enabled": false
+    }
+  ]
+}

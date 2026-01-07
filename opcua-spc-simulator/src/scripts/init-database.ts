@@ -70,12 +70,9 @@ async function initializeDatabase(options: InitOptions): Promise<void> {
   // Create store
   const store = new SQLiteHistoryStore(options.dbPath);
 
-  // Create parameter configs
+  // Create parameter configs (using new format with built-in defaults)
   const parameterConfigs = createDefaultParameters(
     options.parameterCount,
-    options.target,
-    options.uslOffset,
-    options.lslOffset,
     options.sampleRate
   );
 
@@ -91,8 +88,7 @@ async function initializeDatabase(options: InitOptions): Promise<void> {
   console.log(`Scenario: ${scenario.name} - ${scenario.description}`);
   console.log(`Sample rate: ${options.sampleRate}ms`);
   console.log(`Parameters: ${options.parameterCount}`);
-  console.log(`Target: ${options.target}`);
-  console.log(`Tolerance: ±${options.uslOffset}%`);
+  console.log(`Using built-in welding parameter defaults`);
   console.log('');
 
   const totalSamples =

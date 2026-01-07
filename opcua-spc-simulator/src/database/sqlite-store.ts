@@ -4,7 +4,23 @@
  */
 
 import Database from 'better-sqlite3';
-import { HistoricalDataPoint } from '../types';
+import { HistoricalDataPoint, AcquisitionStatus } from '../types';
+
+/**
+ * Persisted simulator state
+ */
+export interface PersistedState {
+  acquisitionStatus: AcquisitionStatus;
+  startedAt: string | null;
+  stoppedAt: string | null;
+  scenarioName: string;
+  parameterStates: {
+    parameterIndex: number;
+    sampleIndex: number;
+    sampleValue: number;
+    engValue: number;
+  }[];
+}
 
 export class SQLiteHistoryStore {
   private db: Database.Database;
@@ -54,6 +70,29 @@ export class SQLiteHistoryStore {
         unit TEXT DEFAULT 'mm',
         sample_rate INTEGER DEFAULT 1000
       );
+
+      -- Simulator state persistence table
+      CREATE TABLE IF NOT EXISTS simulator_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        acquisition_status INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT,
+        stopped_at TEXT,
+        scenario_name TEXT DEFAULT 'realistic',
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
+      -- Parameter state persistence table
+      CREATE TABLE IF NOT EXISTS parameter_state (
+        parameter_index INTEGER PRIMARY KEY,
+        sample_index INTEGER NOT NULL DEFAULT 0,
+        sample_value REAL NOT NULL DEFAULT 0,
+        eng_value REAL NOT NULL DEFAULT 0,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
+      -- Initialize simulator state if not exists
+      INSERT OR IGNORE INTO simulator_state (id, acquisition_status, scenario_name)
+      VALUES (1, 0, 'realistic');
     `);
   }
 
@@ -230,6 +269,130 @@ export class SQLiteHistoryStore {
       avg: row.avg,
       stddev: Math.sqrt(row.variance || 0),
     };
+  }
+
+  /**
+   * Save simulator state for persistence across restarts
+   */
+  saveSimulatorState(state: {
+    acquisitionStatus: AcquisitionStatus;
+    startedAt: Date | null;
+    stoppedAt: Date | null;
+    scenarioName: string;
+  }): void {
+    const stmt = this.db.prepare(`
+      UPDATE simulator_state SET
+        acquisition_status = ?,
+        started_at = ?,
+        stopped_at = ?,
+        scenario_name = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = 1
+    `);
+    stmt.run(
+      state.acquisitionStatus,
+      state.startedAt?.toISOString() ?? null,
+      state.stoppedAt?.toISOString() ?? null,
+      state.scenarioName
+    );
+  }
+
+  /**
+   * Save parameter state for persistence
+   */
+  saveParameterState(state: {
+    parameterIndex: number;
+    sampleIndex: number;
+    sampleValue: number;
+    engValue: number;
+  }): void {
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO parameter_state
+      (parameter_index, sample_index, sample_value, eng_value, updated_at)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `);
+    stmt.run(
+      state.parameterIndex,
+      state.sampleIndex,
+      state.sampleValue,
+      state.engValue
+    );
+  }
+
+  /**
+   * Save multiple parameter states in a transaction
+   */
+  saveParameterStates(states: {
+    parameterIndex: number;
+    sampleIndex: number;
+    sampleValue: number;
+    engValue: number;
+  }[]): void {
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO parameter_state
+      (parameter_index, sample_index, sample_value, eng_value, updated_at)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `);
+
+    const saveAll = this.db.transaction((stateList: typeof states) => {
+      for (const state of stateList) {
+        stmt.run(
+          state.parameterIndex,
+          state.sampleIndex,
+          state.sampleValue,
+          state.engValue
+        );
+      }
+    });
+
+    saveAll(states);
+  }
+
+  /**
+   * Load persisted simulator state
+   */
+  loadSimulatorState(): PersistedState | null {
+    const stateRow = this.db.prepare(`
+      SELECT acquisition_status, started_at, stopped_at, scenario_name
+      FROM simulator_state WHERE id = 1
+    `).get() as any;
+
+    if (!stateRow) return null;
+
+    const paramRows = this.db.prepare(`
+      SELECT parameter_index, sample_index, sample_value, eng_value
+      FROM parameter_state
+      ORDER BY parameter_index
+    `).all() as any[];
+
+    return {
+      acquisitionStatus: stateRow.acquisition_status as AcquisitionStatus,
+      startedAt: stateRow.started_at,
+      stoppedAt: stateRow.stopped_at,
+      scenarioName: stateRow.scenario_name || 'realistic',
+      parameterStates: paramRows.map(row => ({
+        parameterIndex: row.parameter_index,
+        sampleIndex: row.sample_index,
+        sampleValue: row.sample_value,
+        engValue: row.eng_value,
+      })),
+    };
+  }
+
+  /**
+   * Clear persisted state (reset to defaults)
+   */
+  clearPersistedState(): void {
+    this.db.exec(`
+      UPDATE simulator_state SET
+        acquisition_status = 0,
+        started_at = NULL,
+        stopped_at = NULL,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = 1;
+
+      DELETE FROM parameter_state;
+    `);
   }
 
   /**

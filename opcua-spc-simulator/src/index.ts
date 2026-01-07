@@ -11,6 +11,36 @@ import { CLIOptions, NodeIdFormat } from './types';
 import { listScenarios } from './simulation/scenarios';
 import path from 'path';
 import fs from 'fs';
+import net from 'net';
+
+/**
+ * Check if a port is available
+ */
+function isPortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => {
+      server.close();
+      resolve(true);
+    });
+    server.listen(port);
+  });
+}
+
+/**
+ * Wait for a port to become available with retry
+ */
+async function waitForPort(port: number, maxRetries: number = 10, delayMs: number = 1000): Promise<boolean> {
+  for (let i = 0; i < maxRetries; i++) {
+    if (await isPortAvailable(port)) {
+      return true;
+    }
+    console.log(`Port ${port} is in use, waiting... (${i + 1}/${maxRetries})`);
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+  }
+  return false;
+}
 
 const program = new Command();
 
@@ -35,6 +65,7 @@ program
   .option('-n, --namespace-index <index>', 'Namespace index for custom nodes (1=server namespace, 2+=custom)', '2')
   .option('--node-id-format <format>', 'NodeId format: "string" (ns=X;s=Path) or "numeric" (ns=X;i=NNN)', 'string')
   .option('-w, --dashboard-port <port>', 'Web dashboard port (0 to disable)', '3000')
+  .option('-c, --config <path>', 'Path to parameters configuration file (JSON)')
   .action(async (options) => {
     // Handle list scenarios
     if (options.listScenarios) {
@@ -67,6 +98,7 @@ program
       namespaceIndex: Math.max(1, parseInt(options.namespaceIndex, 10)),
       nodeIdFormat,
       dashboardPort: parseInt(options.dashboardPort, 10),
+      configFile: options.config,
     };
 
     // Validate parameter count
@@ -95,6 +127,20 @@ program
     process.on('SIGTERM', shutdown);
 
     try {
+      // Wait for OPC UA port to become available
+      if (!await waitForPort(cliOptions.port, 5, 1000)) {
+        console.error(`Error: Port ${cliOptions.port} (OPC UA) is still in use after waiting. Please close the other process or use a different port with --port.`);
+        process.exit(1);
+      }
+
+      // Wait for dashboard port to become available (if enabled)
+      if (cliOptions.dashboardPort > 0) {
+        if (!await waitForPort(cliOptions.dashboardPort, 5, 1000)) {
+          console.error(`Error: Port ${cliOptions.dashboardPort} (Dashboard) is still in use after waiting. Please close the other process or use a different port with --dashboard-port.`);
+          process.exit(1);
+        }
+      }
+
       await server.start();
 
       // Print usage examples

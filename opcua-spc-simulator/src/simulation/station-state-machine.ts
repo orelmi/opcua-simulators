@@ -37,13 +37,34 @@ export class StationStateMachine extends EventEmitter {
   private autoResetTimer: NodeJS.Timeout | null = null;
 
   /**
-   * @param autoResetDelay - Delay in ms before auto-reset from AcquisitionStopped to Idle (0 = disabled)
+   * @param initialStatusOrAutoResetDelay - Initial status to restore OR delay in ms before auto-reset (0 = disabled)
+   * @param autoResetDelay - Delay in ms before auto-reset (only used if first param is status)
    */
-  constructor(autoResetDelay: number = 0) {
+  constructor(initialStatusOrAutoResetDelay: AcquisitionStatus | number = 0, autoResetDelay: number = 0) {
     super();
-    this.autoResetDelay = autoResetDelay;
+
+    // Handle backward compatibility: if first param is a small number, it's autoResetDelay
+    let initialStatus: AcquisitionStatus;
+    if (typeof initialStatusOrAutoResetDelay === 'number' && initialStatusOrAutoResetDelay <= 10) {
+      // Could be status (0-9) or autoResetDelay
+      // Status values are 0-3, 8-9; autoResetDelay would typically be larger
+      if (initialStatusOrAutoResetDelay === 0) {
+        initialStatus = AcquisitionStatus.NotConfigured;
+        this.autoResetDelay = autoResetDelay;
+      } else if (Object.values(AcquisitionStatus).includes(initialStatusOrAutoResetDelay)) {
+        initialStatus = initialStatusOrAutoResetDelay as AcquisitionStatus;
+        this.autoResetDelay = autoResetDelay;
+      } else {
+        initialStatus = AcquisitionStatus.NotConfigured;
+        this.autoResetDelay = initialStatusOrAutoResetDelay;
+      }
+    } else {
+      initialStatus = AcquisitionStatus.NotConfigured;
+      this.autoResetDelay = initialStatusOrAutoResetDelay as number;
+    }
+
     this.state = {
-      status: AcquisitionStatus.NotConfigured,
+      status: initialStatus,
       startedAt: null,
       stoppedAt: null,
       configurationError: null,
@@ -267,6 +288,20 @@ export class StationStateMachine extends EventEmitter {
       [AcquisitionStatus.Configuring]: 'Configuring',
     };
     return names[this.state.status];
+  }
+
+  /**
+   * Set startedAt timestamp (for persistence restore)
+   */
+  setStartedAt(date: Date | null): void {
+    this.state.startedAt = date;
+  }
+
+  /**
+   * Set stoppedAt timestamp (for persistence restore)
+   */
+  setStoppedAt(date: Date | null): void {
+    this.state.stoppedAt = date;
   }
 
   /**

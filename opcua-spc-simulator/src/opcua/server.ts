@@ -16,9 +16,30 @@ import { SQLiteHistoryStore } from '../database/sqlite-store';
 import { ParameterSimulator, createDefaultParameters } from '../simulation/parameter-simulator';
 import { StationStateMachine } from '../simulation/station-state-machine';
 import { DashboardServer } from '../dashboard/dashboard-server';
-import { CLIOptions, ParameterConfig, TriggerType } from '../types';
+import { CLIOptions, ParameterConfig, ParametersConfigFile, AcquisitionStatus } from '../types';
 import path from 'path';
 import fs from 'fs';
+
+const STATE_SAVE_INTERVAL = 5000; // Save state every 5 seconds
+
+/**
+ * Load parameter configuration from a JSON file
+ */
+function loadConfigFile(configPath: string): ParametersConfigFile | undefined {
+  try {
+    if (!fs.existsSync(configPath)) {
+      console.warn(`Config file not found: ${configPath}`);
+      return undefined;
+    }
+    const content = fs.readFileSync(configPath, 'utf-8');
+    const config = JSON.parse(content) as ParametersConfigFile;
+    console.log(`Loaded parameter config from: ${configPath}`);
+    return config;
+  } catch (error) {
+    console.error(`Failed to load config file: ${configPath}`, error);
+    return undefined;
+  }
+}
 
 export class CCSimulatorServer {
   private server: OPCUAServer | null = null;
@@ -28,6 +49,7 @@ export class CCSimulatorServer {
   private dashboard: DashboardServer | null = null;
   private options: CLIOptions;
   private parameterConfigs: ParameterConfig[];
+  private stateSaveIntervalId: NodeJS.Timeout | null = null;
 
   constructor(options: CLIOptions) {
     this.options = options;
@@ -35,13 +57,16 @@ export class CCSimulatorServer {
     // Initialize SQLite store
     this.historyStore = new SQLiteHistoryStore(options.dbPath);
 
-    // Create parameter configurations
+    // Load config file if specified
+    const configOverrides = options.configFile
+      ? loadConfigFile(options.configFile)
+      : undefined;
+
+    // Create parameter configurations using new format
     this.parameterConfigs = createDefaultParameters(
       options.parameterCount,
-      options.target,
-      options.uslOffset,
-      options.lslOffset,
-      options.sampleRate
+      options.sampleRate,
+      configOverrides
     );
 
     // Save configs to database
@@ -60,9 +85,15 @@ export class CCSimulatorServer {
       });
     }
 
+    // Load persisted state if available
+    const persistedState = this.historyStore.loadSimulatorState();
+
+    // Determine scenario: use persisted if available, otherwise CLI option
+    const scenarioToUse = persistedState?.scenarioName || options.scenario;
+
     // Initialize simulator with frequencies
     this.simulator = new ParameterSimulator(
-      options.scenario,
+      scenarioToUse,
       options.sampleRate,
       options.spcFrequency,
       options.engFrequency
@@ -75,13 +106,88 @@ export class CCSimulatorServer {
       }
     }
 
-    // Initialize state machine - starts in NotConfigured state
-    // User must send Configure command to start the workflow:
-    // NotConfigured -> Configure -> Configuring -> Idle -> Start -> AcquisitionStarted -> Stop -> AcquisitionStopped -> Reset -> Idle
-    this.stateMachine = new StationStateMachine(0);
+    // Restore parameter states if persisted
+    if (persistedState && persistedState.parameterStates.length > 0) {
+      this.simulator.restoreParameterStates(persistedState.parameterStates);
+      console.log(`Restored ${persistedState.parameterStates.length} parameter states from persistence`);
+    }
+
+    // Initialize state machine with persisted status or default (NotConfigured)
+    const initialStatus = persistedState?.acquisitionStatus ?? AcquisitionStatus.NotConfigured;
+    this.stateMachine = new StationStateMachine(initialStatus);
+
+    // Restore timestamps if available
+    if (persistedState?.startedAt) {
+      this.stateMachine.setStartedAt(new Date(persistedState.startedAt));
+    }
+    if (persistedState?.stoppedAt) {
+      this.stateMachine.setStoppedAt(new Date(persistedState.stoppedAt));
+    }
+
+    if (initialStatus !== AcquisitionStatus.NotConfigured) {
+      console.log(`Restored acquisition state: ${this.getStatusName(initialStatus)}`);
+    }
 
     // Connect state machine to simulator so SampleValue updates only during acquisition
     this.simulator.setStateMachine(this.stateMachine);
+  }
+
+  private getStatusName(status: AcquisitionStatus): string {
+    const names: Record<AcquisitionStatus, string> = {
+      [AcquisitionStatus.NotConfigured]: 'NotConfigured',
+      [AcquisitionStatus.Idle]: 'Idle',
+      [AcquisitionStatus.AcquisitionStarted]: 'AcquisitionStarted',
+      [AcquisitionStatus.AcquisitionStopped]: 'AcquisitionStopped',
+      [AcquisitionStatus.Configuring]: 'Configuring',
+      [AcquisitionStatus.ConfigurationError]: 'ConfigurationError',
+    };
+    return names[status] || 'Unknown';
+  }
+
+  /**
+   * Start periodic state persistence
+   */
+  private startStatePersistence(): void {
+    // Save state immediately on state machine changes
+    this.stateMachine.on('stateChanged', () => {
+      this.saveCurrentState();
+    });
+
+    // Also save periodically to capture parameter value changes
+    this.stateSaveIntervalId = setInterval(() => {
+      this.saveCurrentState();
+    }, STATE_SAVE_INTERVAL);
+
+    console.log(`State persistence enabled (interval: ${STATE_SAVE_INTERVAL}ms)`);
+  }
+
+  /**
+   * Stop state persistence
+   */
+  private stopStatePersistence(): void {
+    if (this.stateSaveIntervalId) {
+      clearInterval(this.stateSaveIntervalId);
+      this.stateSaveIntervalId = null;
+    }
+  }
+
+  /**
+   * Save current state to database
+   */
+  private saveCurrentState(): void {
+    const machineState = this.stateMachine.getState();
+
+    // Save simulator state
+    this.historyStore.saveSimulatorState({
+      acquisitionStatus: machineState.status,
+      startedAt: machineState.startedAt,
+      stoppedAt: machineState.stoppedAt,
+      scenarioName: this.simulator.getCurrentScenario().name,
+    });
+
+    // Save parameter states
+    const paramStates = this.simulator.getParameterStatesForPersistence();
+    this.historyStore.saveParameterStates(paramStates);
   }
 
   /**
@@ -150,6 +256,9 @@ export class CCSimulatorServer {
     // Start simulation
     this.simulator.start();
 
+    // Start periodic state saving
+    this.startStatePersistence();
+
     // Start web dashboard if port > 0
     if (this.options.dashboardPort > 0) {
       this.dashboard = new DashboardServer({
@@ -170,8 +279,9 @@ export class CCSimulatorServer {
     console.log(`Internal tick rate: ${this.options.sampleRate}ms`);
     console.log(`SPC sample frequency: ${this.options.spcFrequency}ms (SampleValue/SampleIndex)`);
     console.log(`EngValue frequency: ${this.options.engFrequency}ms`);
-    console.log(`Target: ${this.options.target}`);
-    console.log(`Tolerance: LSL=${(this.options.target * (1 - this.options.lslOffset / 100)).toFixed(4)}, USL=${(this.options.target * (1 + this.options.uslOffset / 100)).toFixed(4)}`);
+    if (this.options.configFile) {
+      console.log(`Config file: ${this.options.configFile}`);
+    }
     console.log(`Database: ${this.options.dbPath}`);
     if (this.options.dashboardPort > 0) {
       console.log(`Dashboard: http://localhost:${this.options.dashboardPort}`);
@@ -183,6 +293,12 @@ export class CCSimulatorServer {
    * Stop the server
    */
   async stop(): Promise<void> {
+    // Save final state before stopping
+    this.saveCurrentState();
+
+    // Stop state persistence
+    this.stopStatePersistence();
+
     // Stop dashboard
     if (this.dashboard) {
       await this.dashboard.stop();
