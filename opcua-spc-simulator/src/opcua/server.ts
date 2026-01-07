@@ -265,6 +265,7 @@ export class CCSimulatorServer {
         port: this.options.dashboardPort,
         simulator: this.simulator,
         stateMachine: this.stateMachine,
+        opcuaServer: this,
       });
       await this.dashboard.start();
     }
@@ -359,5 +360,119 @@ export class CCSimulatorServer {
    */
   getSimulator(): ParameterSimulator {
     return this.simulator;
+  }
+
+  /**
+   * Disconnect all OPC UA client sessions by closing sessions and interrupting channels
+   * Useful for simulating communication loss
+   * @returns Number of sessions disconnected
+   */
+  disconnectAllClients(): number {
+    if (!this.server) {
+      return 0;
+    }
+
+    let disconnectedCount = 0;
+
+    // First, close all sessions through the engine
+    const engine = this.server.engine;
+    if (engine && (engine as any)._sessions) {
+      const sessions = (engine as any)._sessions;
+      const sessionKeys = Object.keys(sessions);
+
+      for (const key of sessionKeys) {
+        const session = sessions[key];
+        if (session && session.authenticationToken) {
+          try {
+            engine.closeSession(session.authenticationToken, true, 'Terminated');
+            disconnectedCount++;
+          } catch (error) {
+            console.error(`Failed to close session:`, error);
+          }
+        }
+      }
+    }
+
+    // Then, abruptly interrupt all channels on endpoints
+    const endpoints = (this.server as any).endpoints || [];
+    for (const endpoint of endpoints) {
+      if (endpoint.abruptlyInterruptChannels) {
+        endpoint.abruptlyInterruptChannels();
+      }
+    }
+
+    if (disconnectedCount > 0) {
+      console.log(`Disconnected ${disconnectedCount} OPC UA session(s)`);
+    }
+
+    return disconnectedCount;
+  }
+
+  /**
+   * Get number of connected OPC UA sessions
+   */
+  getConnectedClientCount(): number {
+    if (!this.server) {
+      return 0;
+    }
+    return this.server.currentSessionCount;
+  }
+
+  /**
+   * Get information about connected OPC UA clients
+   */
+  getConnectedClientsInfo(): {
+    sessionCount: number;
+    channelCount: number;
+    clients: {
+      sessionName: string;
+      clientDescription: string;
+      channelId: number | null;
+      creationDate: Date;
+    }[];
+  } {
+    if (!this.server) {
+      return { sessionCount: 0, channelCount: 0, clients: [] };
+    }
+
+    const clients: {
+      sessionName: string;
+      clientDescription: string;
+      channelId: number | null;
+      creationDate: Date;
+    }[] = [];
+
+    // Get channel count from endpoints
+    let channelCount = 0;
+    const endpoints = (this.server as any).endpoints || [];
+    for (const endpoint of endpoints) {
+      if (endpoint.getChannels) {
+        channelCount += endpoint.getChannels().length;
+      }
+    }
+
+    // Get session info from engine
+    const engine = this.server.engine;
+    if (engine && (engine as any)._sessions) {
+      const sessions = (engine as any)._sessions;
+      // _sessions is an object with authenticationToken as keys
+      for (const key of Object.keys(sessions)) {
+        const session = sessions[key];
+        if (session) {
+          clients.push({
+            sessionName: session.sessionName || 'Unknown',
+            clientDescription: session.clientDescription?.applicationName?.text || 'Unknown Client',
+            channelId: session.channelId ?? null,
+            creationDate: session.creationDate || new Date(),
+          });
+        }
+      }
+    }
+
+    return {
+      sessionCount: this.server.currentSessionCount,
+      channelCount,
+      clients,
+    };
   }
 }

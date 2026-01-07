@@ -12,10 +12,28 @@ import { StationStateMachine } from '../simulation/station-state-machine';
 import { listScenarios } from '../simulation/scenarios';
 import { AcquisitionStatus, ScenarioParamDef, ScenarioParams } from '../types';
 
+export interface OpcuaClientInfo {
+  sessionName: string;
+  clientDescription: string;
+  channelId: number | null;
+  creationDate: Date;
+}
+
+export interface OpcuaClientsAccessor {
+  getConnectedClientCount(): number;
+  getConnectedClientsInfo(): {
+    sessionCount: number;
+    channelCount: number;
+    clients: OpcuaClientInfo[];
+  };
+  disconnectAllClients(): number;
+}
+
 export interface DashboardOptions {
   port: number;
   simulator: ParameterSimulator;
   stateMachine: StationStateMachine;
+  opcuaServer?: OpcuaClientsAccessor;
 }
 
 interface DashboardState {
@@ -51,6 +69,11 @@ interface DashboardState {
   }[];
   availableScenarios: { name: string; description: string }[];
   uptime: number;
+  opcuaClients: {
+    sessionCount: number;
+    channelCount: number;
+    clients: OpcuaClientInfo[];
+  };
 }
 
 export class DashboardServer {
@@ -104,6 +127,11 @@ export class DashboardServer {
       lcl: pState.config.controlLimits.lcl,
     }));
 
+    // Get OPC UA client info if server is available
+    const opcuaClients = this.options.opcuaServer
+      ? this.options.opcuaServer.getConnectedClientsInfo()
+      : { sessionCount: 0, channelCount: 0, clients: [] };
+
     return {
       stationState: {
         status: state.status,
@@ -121,6 +149,7 @@ export class DashboardServer {
       parameters,
       availableScenarios: listScenarios(),
       uptime: process.uptime(),
+      opcuaClients,
     };
   }
 
@@ -226,6 +255,29 @@ export class DashboardServer {
         res.json({ success: true });
       } catch (error) {
         res.status(500).json({ error: `Failed to clear events: ${error}` });
+      }
+    });
+
+    // API: Get OPC UA clients info
+    this.app.get('/api/opcua-clients', (_req: Request, res: Response) => {
+      if (!this.options.opcuaServer) {
+        return res.json({ sessionCount: 0, channelCount: 0, clients: [] });
+      }
+      res.json(this.options.opcuaServer.getConnectedClientsInfo());
+    });
+
+    // API: Disconnect all OPC UA clients
+    this.app.post('/api/disconnect-clients', (_req: Request, res: Response) => {
+      if (!this.options.opcuaServer) {
+        return res.status(400).json({ error: 'OPC UA server not available' });
+      }
+
+      try {
+        const disconnectedCount = this.options.opcuaServer.disconnectAllClients();
+        this.broadcastState();
+        res.json({ success: true, disconnectedCount });
+      } catch (error) {
+        res.status(500).json({ error: `Failed to disconnect clients: ${error}` });
       }
     });
 
@@ -910,12 +962,34 @@ export class DashboardServer {
           <h2>Update Frequencies</h2>
           <div class="frequency-control">
             <label>SPC Sample: <span id="spcFreqValue">5</span>s</label>
-            <input type="range" id="spcFreqSlider" min="1" max="30" step="1" value="5" onchange="setFrequency('spc', this.value * 1000)">
+            <input type="range" id="spcFreqSlider" min="1" max="30" step="1" value="5"
+              onmousedown="spcSliderActive = true" ontouchstart="spcSliderActive = true"
+              onmouseup="spcSliderActive = false; setFrequency('spc', this.value * 1000)"
+              ontouchend="spcSliderActive = false; setFrequency('spc', this.value * 1000)"
+              oninput="document.getElementById('spcFreqValue').textContent = this.value">
           </div>
           <div class="frequency-control">
             <label>EngValue: <span id="engFreqValue">100</span>ms</label>
-            <input type="range" id="engFreqSlider" min="100" max="10000" step="100" value="100" onchange="setFrequency('eng', this.value)">
+            <input type="range" id="engFreqSlider" min="100" max="10000" step="100" value="100"
+              onmousedown="engSliderActive = true" ontouchstart="engSliderActive = true"
+              onmouseup="engSliderActive = false; setFrequency('eng', this.value)"
+              ontouchend="engSliderActive = false; setFrequency('eng', this.value)"
+              oninput="document.getElementById('engFreqValue').textContent = this.value">
           </div>
+        </div>
+
+        <div class="panel">
+          <h2>OPC UA Clients</h2>
+          <div class="info-row">
+            <span class="info-label">Sessions</span>
+            <span class="info-value" id="sessionCount">0</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Channels</span>
+            <span class="info-value" id="channelCount">0</span>
+          </div>
+          <div id="clientsList" style="margin-top: 10px; font-size: 0.85rem; max-height: 120px; overflow-y: auto;"></div>
+          <button onclick="disconnectClients()" class="danger" style="width: 100%; margin-top: 10px;">Disconnect All</button>
         </div>
       </div>
 
@@ -1033,6 +1107,10 @@ export class DashboardServer {
     let currentChartLimits = null; // Store limits for current chart { usl, lsl, ucl, lcl, target }
     let lastSampleIndex = null; // Track last sample index to detect new SPC samples
     const MAX_CHART_POINTS = 60;
+
+    // Track slider interaction to prevent updates while dragging
+    let spcSliderActive = false;
+    let engSliderActive = false;
 
     // Sparkline data storage - keyed by parameter index
     const sparklineData = new Map(); // Map<index, { sample: number[], eng: number[], lastSampleIndex: number }>
@@ -1344,13 +1422,17 @@ export class DashboardServer {
       document.getElementById('btnStop').disabled = status !== 2;
       document.getElementById('btnReset').disabled = status !== 3;
 
-      // Update frequency sliders
+      // Update frequency sliders (skip if user is dragging)
       if (data.frequencies) {
-        const spcSeconds = Math.round(data.frequencies.spcFrequency / 1000);
-        document.getElementById('spcFreqValue').textContent = spcSeconds;
-        document.getElementById('spcFreqSlider').value = spcSeconds;
-        document.getElementById('engFreqValue').textContent = data.frequencies.engFrequency;
-        document.getElementById('engFreqSlider').value = data.frequencies.engFrequency;
+        if (!spcSliderActive) {
+          const spcSeconds = Math.round(data.frequencies.spcFrequency / 1000);
+          document.getElementById('spcFreqValue').textContent = spcSeconds;
+          document.getElementById('spcFreqSlider').value = spcSeconds;
+        }
+        if (!engSliderActive) {
+          document.getElementById('engFreqValue').textContent = data.frequencies.engFrequency;
+          document.getElementById('engFreqSlider').value = data.frequencies.engFrequency;
+        }
       }
 
       // Update parameters and sparkline data
@@ -1405,6 +1487,39 @@ export class DashboardServer {
       if (currentChartParam !== null) {
         const param = data.parameters.find(p => p.index === currentChartParam);
         if (param) updateChartData(param);
+      }
+
+      // Update OPC UA clients info
+      if (data.opcuaClients) {
+        document.getElementById('sessionCount').textContent = data.opcuaClients.sessionCount;
+        document.getElementById('channelCount').textContent = data.opcuaClients.channelCount;
+
+        const clientsList = document.getElementById('clientsList');
+        if (data.opcuaClients.clients.length === 0) {
+          clientsList.innerHTML = '<div style="color: #666; text-align: center;">No clients connected</div>';
+        } else {
+          clientsList.innerHTML = data.opcuaClients.clients.map(c => \`
+            <div style="padding: 4px 0; border-bottom: 1px solid #222;">
+              <div style="color: #4ecca3;">\${c.clientDescription}</div>
+              <div style="color: #666; font-size: 0.75rem;">Session: \${c.sessionName} | Ch: \${c.channelId ?? '-'}</div>
+            </div>
+          \`).join('');
+        }
+      }
+    }
+
+    async function disconnectClients() {
+      if (!confirm('Disconnect all OPC UA clients?')) return;
+      try {
+        const res = await fetch('/api/disconnect-clients', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          console.log('Disconnected ' + data.disconnectedCount + ' client(s)');
+        } else {
+          alert('Failed to disconnect: ' + data.error);
+        }
+      } catch (error) {
+        alert('Error: ' + error.message);
       }
     }
 
