@@ -29,8 +29,8 @@ Objects/
 │   ├── Name                   (String)
 │   ├── SerialNumber           (String)
 │   ├── Manufacturer           (String)
-│   ├── Heartbeat              (UInt32)
-│   ├── HeartbeatAck           (UInt32)
+│   ├── Heartbeat              (UInt64)
+│   ├── HeartbeatAck           (UInt64)
 │   ├── State/
 │   │   ├── Value              (UInt16)
 │   │   ├── StartedAt          (DateTime)
@@ -102,8 +102,8 @@ Objects/
 | `Station.Name` | String | R | Nom auto-généré (ex: "station-A3F2B1") |
 | `Station.SerialNumber` | String | R | Numéro de série (ex: "SN-20260106-B4C8A2") |
 | `Station.Manufacturer` | String | R | "OPC UA SPC Simulator" |
-| `Station.Heartbeat` | UInt32 | RW | Bit de vie - écriture client |
-| `Station.HeartbeatAck` | UInt32 | R | Recopie automatique du Heartbeat |
+| `Station.Heartbeat` | UInt64 | RW | Bit de vie - écriture client |
+| `Station.HeartbeatAck` | UInt64 | R | Recopie automatique du Heartbeat |
 
 ### État de la station
 

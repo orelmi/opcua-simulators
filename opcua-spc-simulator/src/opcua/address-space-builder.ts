@@ -10,6 +10,7 @@ import {
   UAObject,
   UAVariable,
   Variant,
+  VariantArrayType,
   StatusCodes,
   DataValue,
   HistoryReadResult,
@@ -615,14 +616,14 @@ export class AddressSpaceBuilder {
       value: { dataType: DataType.String, value: 'OPC UA SPC Simulator' },
     });
 
-    // Station/Heartbeat - writable by client for watchdog (using UInt32 for compatibility)
+    // Station/Heartbeat - writable by client for watchdog (UInt64 as per spec)
     const heartbeatVar = this.namespace.addVariable({
       nodeId: this.generateNodeId('Station.Heartbeat'),
       componentOf: stationObject,
       browseName: 'Heartbeat',
       displayName: 'Heartbeat',
-      dataType: DataType.UInt32,
-      value: { dataType: DataType.UInt32, value: 0 },
+      dataType: DataType.UInt64,
+      value: { dataType: DataType.UInt64, arrayType: VariantArrayType.Scalar, value: [0, 0] },
       accessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
       userAccessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
     });
@@ -633,8 +634,8 @@ export class AddressSpaceBuilder {
       componentOf: stationObject,
       browseName: 'HeartbeatAck',
       displayName: 'HeartbeatAck',
-      dataType: DataType.UInt32,
-      value: { dataType: DataType.UInt32, value: 0 },
+      dataType: DataType.UInt64,
+      value: { dataType: DataType.UInt64, arrayType: VariantArrayType.Scalar, value: [0, 0] },
       accessLevel: AccessLevelFlag.CurrentRead,
       userAccessLevel: AccessLevelFlag.CurrentRead,
     });
@@ -642,7 +643,7 @@ export class AddressSpaceBuilder {
     // Bind Heartbeat -> HeartbeatAck copy mechanism
     heartbeatVar.on('value_changed', (dataValue) => {
       heartbeatAckVar.setValueFromSource(
-        new Variant({ dataType: DataType.UInt32, value: dataValue.value.value }),
+        new Variant({ dataType: DataType.UInt64, arrayType: VariantArrayType.Scalar, value: dataValue.value.value }),
         StatusCodes.Good,
         new Date()
       );
