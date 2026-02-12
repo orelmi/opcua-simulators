@@ -29,6 +29,7 @@ export class ParameterSimulator extends EventEmitter {
   private spcFrequency: number;
   private engFrequency: number;
   private stateMachine: StationStateMachine | null = null;
+  private forceSpcEmission: boolean = false;
 
   /**
    * @param scenarioName - Name of the simulation scenario
@@ -193,7 +194,8 @@ export class ParameterSimulator extends EventEmitter {
     const now = timestamp.getTime();
 
     // Check if this tick will emit an SPC sample
-    const isAcquiring = this.stateMachine?.getStatus() === AcquisitionStatus.AcquisitionStarted;
+    const isAcquiring = this.forceSpcEmission ||
+                        (this.stateMachine?.getStatus() === AcquisitionStatus.AcquisitionStarted);
 
     // Check if ANY parameter will emit SPC this tick (they should be synchronized)
     let willEmitSpc = false;
@@ -350,6 +352,23 @@ export class ParameterSimulator extends EventEmitter {
     this.engFrequency = Math.max(minFreq, Math.min(maxFreq, frequencyMs));
     console.log(`[Simulator] EngValue frequency changed to ${this.engFrequency}ms`);
     this.emit('frequencyChanged', { type: 'eng', frequency: this.engFrequency });
+  }
+
+  /**
+   * Get force SPC emission flag
+   */
+  getForceSpcEmission(): boolean {
+    return this.forceSpcEmission;
+  }
+
+  /**
+   * Set force SPC emission flag
+   * When true, SPC samples are emitted regardless of acquisition state
+   */
+  setForceSpcEmission(force: boolean): void {
+    this.forceSpcEmission = force;
+    console.log(`[Simulator] Force SPC emission ${force ? 'enabled' : 'disabled'}`);
+    this.emit('forceSpcEmissionChanged', { forceSpcEmission: force });
   }
 
   /**

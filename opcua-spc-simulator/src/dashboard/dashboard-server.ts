@@ -58,6 +58,7 @@ interface DashboardState {
     spcFrequency: number;
     engFrequency: number;
   };
+  forceSpcEmission: boolean;
   parameters: {
     index: number;
     name: string;
@@ -151,6 +152,7 @@ export class DashboardServer {
         params: this.options.simulator.getScenarioParams(),
       },
       frequencies,
+      forceSpcEmission: this.options.simulator.getForceSpcEmission(),
       parameters,
       availableScenarios: listScenarios(),
       uptime: process.uptime(),
@@ -219,6 +221,26 @@ export class DashboardServer {
         res.json({ success: true, params: this.options.simulator.getScenarioParams() });
       } catch (error) {
         res.status(500).json({ error: `Failed to set scenario params: ${error}` });
+      }
+    });
+
+    // API: Set force SPC emission
+    this.app.post('/api/force-spc-emission', (req: Request, res: Response) => {
+      const { forceSpcEmission } = req.body;
+
+      if (typeof forceSpcEmission !== 'boolean') {
+        return res.status(400).json({ error: 'forceSpcEmission must be boolean' });
+      }
+
+      try {
+        this.options.simulator.setForceSpcEmission(forceSpcEmission);
+        this.broadcastState();
+        res.json({
+          success: true,
+          forceSpcEmission: this.options.simulator.getForceSpcEmission()
+        });
+      } catch (error) {
+        res.status(500).json({ error: `Failed to set force SPC emission: ${error}` });
       }
     });
 
@@ -330,7 +352,11 @@ export class DashboardServer {
             this.options.stateMachine.dispatch({ type: 'STOP_ACQUISITION', trigger: 0 });
             break;
           case 'reset':
-            this.options.stateMachine.dispatch({ type: 'RESET' });
+            const { resetToNotConfigured } = req.body;
+            this.options.stateMachine.dispatch({
+              type: 'RESET',
+              resetToNotConfigured: resetToNotConfigured === true
+            });
             break;
         }
         this.broadcastState();
@@ -520,6 +546,13 @@ export class DashboardServer {
     .status-3 { background: #5c3d2e; color: #ffa500; }
     .status-8 { background: #3d3d1e; color: #ffff4e; }
     .status-9 { background: #5c2e2e; color: #ff4e4e; }
+    .force-spc-enabled {
+      color: #4eff4e;
+      font-weight: 600;
+    }
+    .force-spc-disabled {
+      color: #888;
+    }
     .info-row {
       display: flex;
       justify-content: space-between;
@@ -1000,6 +1033,12 @@ export class DashboardServer {
             <span class="info-label">Stopped At</span>
             <span class="info-value" id="stoppedAt">--</span>
           </div>
+          <div class="info-row">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: #888;">
+              <input type="checkbox" id="resetToNotConfiguredCheck" style="cursor: pointer; width: 16px; height: 16px;">
+              <span>Reset to Not Configured</span>
+            </label>
+          </div>
           <div class="commands">
             <button id="btnConfigure" onclick="sendCommand('configure')">Configure</button>
             <button id="btnStart" onclick="sendCommand('start')">Start</button>
@@ -1026,6 +1065,21 @@ export class DashboardServer {
               ontouchend="engSliderActive = false; setFrequency('eng', this.value)"
               oninput="document.getElementById('engFreqValue').textContent = this.value">
           </div>
+        </div>
+
+        <div class="panel">
+          <h2>SPC Emission Control</h2>
+          <div class="info-row">
+            <span class="info-label">Force SPC Emission</span>
+            <span class="info-value" id="forceSpcStatus">--</span>
+          </div>
+          <div style="margin-top: 10px; font-size: 0.85rem; color: #888; line-height: 1.4;">
+            When enabled, SPC samples (SampleValue/SampleIndex) are emitted continuously, regardless of acquisition state.
+          </div>
+          <button id="btnToggleForceSpc" onclick="toggleForceSpcEmission()"
+                  style="width: 100%; margin-top: 10px;">
+            Toggle Force SPC
+          </button>
         </div>
 
         <div class="panel">
@@ -1486,6 +1540,24 @@ export class DashboardServer {
         }
       }
 
+      // Update force SPC emission status
+      if (typeof data.forceSpcEmission !== 'undefined') {
+        const forceSpcStatus = document.getElementById('forceSpcStatus');
+        const forceSpcBtn = document.getElementById('btnToggleForceSpc');
+
+        if (data.forceSpcEmission) {
+          forceSpcStatus.textContent = 'ENABLED';
+          forceSpcStatus.className = 'info-value force-spc-enabled';
+          forceSpcBtn.textContent = 'Disable Force SPC';
+          forceSpcBtn.style.background = '#e74c3c';
+        } else {
+          forceSpcStatus.textContent = 'Disabled';
+          forceSpcStatus.className = 'info-value force-spc-disabled';
+          forceSpcBtn.textContent = 'Enable Force SPC';
+          forceSpcBtn.style.background = '#4ecca3';
+        }
+      }
+
       // Update parameters and sparkline data
       data.parameters.forEach(p => updateSparklineData(p));
 
@@ -1617,7 +1689,19 @@ async function resetPersistence() {
 
     async function sendCommand(cmd) {
       try {
-        const res = await fetch('/api/command/' + cmd, { method: 'POST' });
+        const options = {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        };
+
+        // For reset command, read checkbox state
+        if (cmd === 'reset') {
+          const checkbox = document.getElementById('resetToNotConfiguredCheck');
+          const resetToNotConfigured = checkbox ? checkbox.checked : false;
+          options.body = JSON.stringify({ resetToNotConfigured });
+        }
+
+        const res = await fetch('/api/command/' + cmd, options);
         const data = await res.json();
         if (!data.success) {
           alert('Command failed: ' + data.error);
@@ -1721,6 +1805,26 @@ async function resetPersistence() {
     async function resetScenarioTime() {
       try {
         await fetch('/api/scenario-reset-time', { method: 'POST' });
+      } catch (error) {
+        alert('Error: ' + error.message);
+      }
+    }
+
+    async function toggleForceSpcEmission() {
+      if (!state) return;
+
+      const newState = !state.forceSpcEmission;
+
+      try {
+        const res = await fetch('/api/force-spc-emission', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ forceSpcEmission: newState })
+        });
+        const data = await res.json();
+        if (!data.success) {
+          alert('Failed to toggle force SPC emission: ' + data.error);
+        }
       } catch (error) {
         alert('Error: ' + error.message);
       }
