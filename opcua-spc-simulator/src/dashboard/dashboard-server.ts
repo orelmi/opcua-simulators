@@ -27,6 +27,10 @@ export interface OpcuaClientsAccessor {
     clients: OpcuaClientInfo[];
   };
   disconnectAllClients(): number;
+  getHeartbeatSimulationEnabled(): boolean;
+  setHeartbeatSimulationEnabled(enabled: boolean): void;
+  getStorageFillOverride(): number | null;
+  setStorageFillOverride(value: number | null): void;
 }
 
 export interface PersistenceStore {
@@ -59,6 +63,8 @@ interface DashboardState {
     engFrequency: number;
   };
   forceSpcEmission: boolean;
+  heartbeatSimulationEnabled: boolean;
+  storageFillOverride: number | null;
   parameters: {
     index: number;
     name: string;
@@ -153,6 +159,8 @@ export class DashboardServer {
       },
       frequencies,
       forceSpcEmission: this.options.simulator.getForceSpcEmission(),
+      heartbeatSimulationEnabled: this.options.opcuaServer?.getHeartbeatSimulationEnabled() ?? true,
+      storageFillOverride: this.options.opcuaServer?.getStorageFillOverride() ?? null,
       parameters,
       availableScenarios: listScenarios(),
       uptime: process.uptime(),
@@ -221,6 +229,51 @@ export class DashboardServer {
         res.json({ success: true, params: this.options.simulator.getScenarioParams() });
       } catch (error) {
         res.status(500).json({ error: `Failed to set scenario params: ${error}` });
+      }
+    });
+
+    // API: Set heartbeat simulation
+    this.app.post('/api/heartbeat-simulation', (req: Request, res: Response) => {
+      const { enabled } = req.body;
+
+      if (typeof enabled !== 'boolean') {
+        return res.status(400).json({ error: 'enabled must be boolean' });
+      }
+
+      if (!this.options.opcuaServer) {
+        return res.status(400).json({ error: 'OPC UA server not available' });
+      }
+
+      try {
+        this.options.opcuaServer.setHeartbeatSimulationEnabled(enabled);
+        this.broadcastState();
+        res.json({
+          success: true,
+          heartbeatSimulationEnabled: this.options.opcuaServer.getHeartbeatSimulationEnabled()
+        });
+      } catch (error) {
+        res.status(500).json({ error: `Failed to set heartbeat simulation: ${error}` });
+      }
+    });
+
+    // API: Set storage fill percentage override
+    this.app.post('/api/storage-fill', (req: Request, res: Response) => {
+      const { value } = req.body;
+
+      if (typeof value !== 'number' || value < 0 || value > 100) {
+        return res.status(400).json({ error: 'value must be a number between 0 and 100' });
+      }
+
+      if (!this.options.opcuaServer) {
+        return res.status(400).json({ error: 'OPC UA server not available' });
+      }
+
+      try {
+        this.options.opcuaServer.setStorageFillOverride(value);
+        this.broadcastState();
+        res.json({ success: true, value });
+      } catch (error) {
+        res.status(500).json({ error: `Failed to set storage fill: ${error}` });
       }
     });
 
@@ -1045,6 +1098,20 @@ export class DashboardServer {
             <button id="btnStop" onclick="sendCommand('stop')" class="danger">Stop</button>
             <button id="btnReset" onclick="sendCommand('reset')">Reset</button>
           </div>
+          <div class="info-row" style="margin-top: 10px;">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: #888;">
+              <input type="checkbox" id="heartbeatSimCheck" checked onchange="toggleHeartbeatSimulation(this.checked)" style="cursor: pointer; width: 16px; height: 16px;">
+              <span>Simulate Heartbeat</span>
+            </label>
+          </div>
+          <div class="frequency-control" style="margin-top: 10px;">
+            <label style="color: #888;">Storage Fill: <span id="storageFillValue">--</span>%</label>
+            <input type="range" id="storageFillSlider" min="0" max="100" step="1" value="50"
+              onmousedown="storageFillSliderActive = true" ontouchstart="storageFillSliderActive = true"
+              onmouseup="storageFillSliderActive = false; setStorageFill(this.value)"
+              ontouchend="storageFillSliderActive = false; setStorageFill(this.value)"
+              oninput="document.getElementById('storageFillValue').textContent = this.value">
+          </div>
         </div>
 
         <div class="panel">
@@ -1216,6 +1283,7 @@ export class DashboardServer {
     // Track slider interaction to prevent updates while dragging
     let spcSliderActive = false;
     let engSliderActive = false;
+    let storageFillSliderActive = false;
 
     // Sparkline data storage - keyed by parameter index
     const sparklineData = new Map(); // Map<index, { sample: number[], eng: number[], lastSampleIndex: number }>
@@ -1558,6 +1626,23 @@ export class DashboardServer {
         }
       }
 
+      // Update heartbeat simulation checkbox
+      if (typeof data.heartbeatSimulationEnabled !== 'undefined') {
+        const heartbeatCheck = document.getElementById('heartbeatSimCheck');
+        if (heartbeatCheck) {
+          heartbeatCheck.checked = data.heartbeatSimulationEnabled;
+        }
+      }
+
+      // Update storage fill slider (skip if user is dragging)
+      if (!storageFillSliderActive && data.storageFillOverride !== undefined) {
+        const val = data.storageFillOverride !== null ? data.storageFillOverride : '--';
+        document.getElementById('storageFillValue').textContent = val;
+        if (data.storageFillOverride !== null) {
+          document.getElementById('storageFillSlider').value = data.storageFillOverride;
+        }
+      }
+
       // Update parameters and sparkline data
       data.parameters.forEach(p => updateSparklineData(p));
 
@@ -1805,6 +1890,38 @@ async function resetPersistence() {
     async function resetScenarioTime() {
       try {
         await fetch('/api/scenario-reset-time', { method: 'POST' });
+      } catch (error) {
+        alert('Error: ' + error.message);
+      }
+    }
+
+    async function setStorageFill(value) {
+      try {
+        const res = await fetch('/api/storage-fill', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value: parseInt(value, 10) })
+        });
+        const data = await res.json();
+        if (!data.success) {
+          alert('Failed to set storage fill: ' + data.error);
+        }
+      } catch (error) {
+        alert('Error: ' + error.message);
+      }
+    }
+
+    async function toggleHeartbeatSimulation(enabled) {
+      try {
+        const res = await fetch('/api/heartbeat-simulation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        const data = await res.json();
+        if (!data.success) {
+          alert('Failed to toggle heartbeat simulation: ' + data.error);
+        }
       } catch (error) {
         alert('Error: ' + error.message);
       }
