@@ -71,6 +71,7 @@ interface DashboardState {
     enabled: boolean;
     sampleValue: number;
     engValue: number;
+    sampleValueOverride: number | null;
     sampleIndex: number;
     unit: string;
     target: number;
@@ -130,6 +131,7 @@ export class DashboardServer {
       enabled: pState.config.enabled,
       sampleValue: pState.sampleValue,
       engValue: pState.engValue,
+      sampleValueOverride: this.options.simulator.getSampleValueOverride(index),
       sampleIndex: pState.sampleIndex,
       unit: pState.config.unit,
       target: pState.config.toleranceLimits.target,
@@ -274,6 +276,26 @@ export class DashboardServer {
         res.json({ success: true, value });
       } catch (error) {
         res.status(500).json({ error: `Failed to set storage fill: ${error}` });
+      }
+    });
+
+    // API: Force SampleValue per parameter (null = auto)
+    this.app.post('/api/sample-value-override', (req: Request, res: Response) => {
+      const { parameterIndex, value } = req.body;
+
+      if (typeof parameterIndex !== 'number') {
+        return res.status(400).json({ error: 'parameterIndex must be a number' });
+      }
+      if (value !== null && typeof value !== 'number') {
+        return res.status(400).json({ error: 'value must be a number or null' });
+      }
+
+      try {
+        this.options.simulator.setSampleValueOverride(parameterIndex, value);
+        this.broadcastState();
+        res.json({ success: true, parameterIndex, sampleValueOverride: this.options.simulator.getSampleValueOverride(parameterIndex) });
+      } catch (error) {
+        res.status(500).json({ error: `Failed to set SampleValue override: ${error}` });
       }
     });
 
@@ -1643,53 +1665,90 @@ export class DashboardServer {
         }
       }
 
+
+
       // Update parameters and sparkline data
       data.parameters.forEach(p => updateSparklineData(p));
 
       const grid = document.getElementById('parametersGrid');
-      grid.innerHTML = data.parameters.map(p => {
-        const limitsJson = JSON.stringify({ usl: p.usl, lsl: p.lsl, ucl: p.ucl, lcl: p.lcl, target: p.target }).replace(/"/g, '&quot;');
-        return \`
-        <div class="param-card \${p.enabled ? '' : 'disabled'}">
-          <div class="param-header">
-            <span class="param-name">\${p.name}</span>
-            <span class="param-index">P\${String(p.index).padStart(2, '0')}</span>
-          </div>
-          <div class="param-values">
-            <div class="param-value" onclick="openChartModal(\${p.index}, '\${p.name}', 'sample', '\${p.unit}', \${limitsJson})" title="Click to view chart">
-              <div class="param-value-label">Sample Value</div>
-              <div class="param-value-number">\${formatNumber(p.sampleValue)}<span class="param-unit">\${p.unit}</span></div>
+
+      if (grid.children.length !== data.parameters.length) {
+        // Full initial render (first load or parameter count change)
+        grid.innerHTML = data.parameters.map(p => {
+          const limitsJson = JSON.stringify({ usl: p.usl, lsl: p.lsl, ucl: p.ucl, lcl: p.lcl, target: p.target }).replace(/"/g, '&quot;');
+          return \`
+          <div class="param-card \${p.enabled ? '' : 'disabled'}" id="pcard-\${p.index}">
+            <div class="param-header">
+              <span class="param-name">\${p.name}</span>
+              <span class="param-index">P\${String(p.index).padStart(2, '0')}</span>
             </div>
-            <div class="param-value" onclick="openChartModal(\${p.index}, '\${p.name}', 'eng', '\${p.unit}', \${limitsJson})" title="Click to view chart">
-              <div class="param-value-label">Eng Value</div>
-              <div class="param-value-number">\${formatNumber(p.engValue)}<span class="param-unit">\${p.unit}</span></div>
+            <div class="param-values">
+              <div class="param-value" onclick="openChartModal(\${p.index}, '\${p.name}', 'sample', '\${p.unit}', \${limitsJson})" title="Click to view chart">
+                <div class="param-value-label">Sample Value</div>
+                <div class="param-value-number" id="psv-\${p.index}">\${formatNumber(p.sampleValue)}<span class="param-unit">\${p.unit}</span></div>
+              </div>
+              <div class="param-value" onclick="openChartModal(\${p.index}, '\${p.name}', 'eng', '\${p.unit}', \${limitsJson})" title="Click to view chart">
+                <div class="param-value-label">Eng Value</div>
+                <div class="param-value-number" id="pev-\${p.index}">\${formatNumber(p.engValue)}<span class="param-unit">\${p.unit}</span></div>
+              </div>
+            </div>
+            <div class="param-sparklines">
+              <div class="sparkline-container" onclick="openChartModal(\${p.index}, '\${p.name}', 'sample', '\${p.unit}', \${limitsJson})" title="Click to view chart">
+                <div class="sparkline-label">SampleValue</div>
+                <svg class="sparkline sparkline-sample" viewBox="0 0 100 30" preserveAspectRatio="none">
+                  <path id="pss-\${p.index}" d="\${renderSparkline(p.index, 'sample')}"/>
+                </svg>
+              </div>
+              <div class="sparkline-container" onclick="openChartModal(\${p.index}, '\${p.name}', 'eng', '\${p.unit}', \${limitsJson})" title="Click to view chart">
+                <div class="sparkline-label">EngValue</div>
+                <svg class="sparkline sparkline-eng" viewBox="0 0 100 30" preserveAspectRatio="none">
+                  <path id="pes-\${p.index}" d="\${renderSparkline(p.index, 'eng')}"/>
+                </svg>
+              </div>
+            </div>
+            <div id="pfi-\${p.index}" style="text-align: center; margin-top: 8px; color: #666; font-size: 0.8rem;">
+              Sample #\${p.sampleIndex} | Target: \${formatNumber(p.target)}
+            </div>
+            <div class="param-limits">
+              <div class="param-limit tolerance"><span>LSL</span><span class="param-limit-value">\${formatNumber(p.lsl)}</span></div>
+              <div class="param-limit tolerance"><span>USL</span><span class="param-limit-value">\${formatNumber(p.usl)}</span></div>
+              <div class="param-limit control"><span>LCL</span><span class="param-limit-value">\${formatNumber(p.lcl)}</span></div>
+              <div class="param-limit control"><span>UCL</span><span class="param-limit-value">\${formatNumber(p.ucl)}</span></div>
+            </div>
+            <div style="margin-top: 8px; display: flex; align-items: center; gap: 6px;">
+              <label style="color: #888; font-size: 0.78rem; display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap;">
+                <input type="checkbox" id="pcb-\${p.index}" \${p.sampleValueOverride !== null ? 'checked' : ''}
+                  onchange="toggleSampleValueMode(\${p.index}, this.checked)"
+                  style="cursor: pointer; width: 13px; height: 13px;">
+                Force SampleVal
+              </label>
+              <input type="text" inputmode="decimal" id="pinp-\${p.index}"
+                value="\${p.sampleValueOverride !== null ? p.sampleValueOverride.toFixed(2) : ''}"
+                \${p.sampleValueOverride === null ? 'disabled' : ''}
+                placeholder="auto"
+                style="flex: 1; min-width: 0; padding: 3px 6px; border-radius: 4px; border: 1px solid \${p.sampleValueOverride !== null ? '#4ecca3' : '#333'}; background: #0f0f23; color: \${p.sampleValueOverride !== null ? '#eee' : '#666'}; font-size: 0.78rem;"
+                onchange="setSampleValueOverride(\${p.index}, this.value)">
             </div>
           </div>
-          <div class="param-sparklines">
-            <div class="sparkline-container" onclick="openChartModal(\${p.index}, '\${p.name}', 'sample', '\${p.unit}', \${limitsJson})" title="Click to view chart">
-              <div class="sparkline-label">SampleValue</div>
-              <svg class="sparkline sparkline-sample" viewBox="0 0 100 30" preserveAspectRatio="none">
-                <path d="\${renderSparkline(p.index, 'sample')}"/>
-              </svg>
-            </div>
-            <div class="sparkline-container" onclick="openChartModal(\${p.index}, '\${p.name}', 'eng', '\${p.unit}', \${limitsJson})" title="Click to view chart">
-              <div class="sparkline-label">EngValue</div>
-              <svg class="sparkline sparkline-eng" viewBox="0 0 100 30" preserveAspectRatio="none">
-                <path d="\${renderSparkline(p.index, 'eng')}"/>
-              </svg>
-            </div>
-          </div>
-          <div style="text-align: center; margin-top: 8px; color: #666; font-size: 0.8rem;">
-            Sample #\${p.sampleIndex} | Target: \${formatNumber(p.target)}
-          </div>
-          <div class="param-limits">
-            <div class="param-limit tolerance"><span>LSL</span><span class="param-limit-value">\${formatNumber(p.lsl)}</span></div>
-            <div class="param-limit tolerance"><span>USL</span><span class="param-limit-value">\${formatNumber(p.usl)}</span></div>
-            <div class="param-limit control"><span>LCL</span><span class="param-limit-value">\${formatNumber(p.lcl)}</span></div>
-            <div class="param-limit control"><span>UCL</span><span class="param-limit-value">\${formatNumber(p.ucl)}</span></div>
-          </div>
-        </div>
-      \`;}).join('');
+          \`;
+        }).join('');
+      } else {
+        // In-place update: only refresh display values and sparklines, never touch inputs
+        data.parameters.forEach(p => {
+          const card = document.getElementById(\`pcard-\${p.index}\`);
+          if (card) card.className = \`param-card \${p.enabled ? '' : 'disabled'}\`;
+          const sv = document.getElementById(\`psv-\${p.index}\`);
+          if (sv) sv.innerHTML = \`\${formatNumber(p.sampleValue)}<span class="param-unit">\${p.unit}</span>\`;
+          const ev = document.getElementById(\`pev-\${p.index}\`);
+          if (ev) ev.innerHTML = \`\${formatNumber(p.engValue)}<span class="param-unit">\${p.unit}</span>\`;
+          const fi = document.getElementById(\`pfi-\${p.index}\`);
+          if (fi) fi.textContent = \`Sample #\${p.sampleIndex} | Target: \${formatNumber(p.target)}\`;
+          const ss = document.getElementById(\`pss-\${p.index}\`);
+          if (ss) ss.setAttribute('d', renderSparkline(p.index, 'sample'));
+          const es = document.getElementById(\`pes-\${p.index}\`);
+          if (es) es.setAttribute('d', renderSparkline(p.index, 'eng'));
+        });
+      }
 
       // Update chart if open
       if (currentChartParam !== null) {
@@ -1905,6 +1964,53 @@ async function resetPersistence() {
         const data = await res.json();
         if (!data.success) {
           alert('Failed to set storage fill: ' + data.error);
+        }
+      } catch (error) {
+        alert('Error: ' + error.message);
+      }
+    }
+
+    function toggleSampleValueMode(paramIndex, manual) {
+      const inp = document.getElementById(\`pinp-\${paramIndex}\`);
+      if (manual) {
+        // Read current displayed sample value to use as initial forced value
+        const svEl = document.getElementById(\`psv-\${paramIndex}\`);
+        const currentVal = svEl ? parseFloat(svEl.textContent) : 0;
+        const initVal = isNaN(currentVal) ? 0 : Math.round(currentVal * 100) / 100;
+        if (inp) {
+          inp.disabled = false;
+          inp.value = initVal.toFixed(2);
+          inp.style.borderColor = '#4ecca3';
+          inp.style.color = '#eee';
+          inp.focus();
+          inp.select();
+        }
+        setSampleValueOverride(paramIndex, initVal);
+      } else {
+        if (inp) {
+          inp.disabled = true;
+          inp.value = '';
+          inp.style.borderColor = '#333';
+          inp.style.color = '#666';
+        }
+        setSampleValueOverride(paramIndex, null);
+      }
+    }
+
+    async function setSampleValueOverride(paramIndex, value) {
+      let parsed = value === null ? null : parseFloat(value);
+      if (parsed !== null && isNaN(parsed)) return;
+      // Round to 2 decimal places
+      if (parsed !== null) parsed = Math.round(parsed * 100) / 100;
+      try {
+        const res = await fetch('/api/sample-value-override', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parameterIndex: paramIndex, value: parsed })
+        });
+        const data = await res.json();
+        if (!data.success) {
+          alert('Failed to set SampleValue override: ' + data.error);
         }
       } catch (error) {
         alert('Error: ' + error.message);
