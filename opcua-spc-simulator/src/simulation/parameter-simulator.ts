@@ -29,6 +29,8 @@ export class ParameterSimulator extends EventEmitter {
   private spcFrequency: number;
   private engFrequency: number;
   private stateMachine: StationStateMachine | null = null;
+  private forceSpcEmission: boolean = false;
+  private sampleValueOverrides: Map<number, number> = new Map();
 
   /**
    * @param scenarioName - Name of the simulation scenario
@@ -193,7 +195,8 @@ export class ParameterSimulator extends EventEmitter {
     const now = timestamp.getTime();
 
     // Check if this tick will emit an SPC sample
-    const isAcquiring = this.stateMachine?.getStatus() === AcquisitionStatus.AcquisitionStarted;
+    const isAcquiring = this.forceSpcEmission ||
+                        (this.stateMachine?.getStatus() === AcquisitionStatus.AcquisitionStarted);
 
     // Check if ANY parameter will emit SPC this tick (they should be synchronized)
     let willEmitSpc = false;
@@ -214,12 +217,12 @@ export class ParameterSimulator extends EventEmitter {
       // Generate base value from scenario (without events for EngValue)
       const baseValue = this.generateBaseValue(state.config);
 
-      // For EngValue: use base value (scenario only, no injected events)
-      // For SampleValue: apply injected events on top of base value
+      // EngValue: always the real-time scenario value (no override, no events)
       const engValue = baseValue;
-      const spcValue = activeEvents.length > 0
-        ? this.applyEventsToValue(baseValue, state.config, activeEvents)
-        : baseValue;
+      // SampleValue: use per-parameter forced value if set, otherwise apply injected events
+      const spcValue = this.sampleValueOverrides.has(index)
+        ? this.sampleValueOverrides.get(index)!
+        : (activeEvents.length > 0 ? this.applyEventsToValue(baseValue, state.config, activeEvents) : baseValue);
 
       // Always update current/internal value
       state.currentValue = spcValue;
@@ -350,6 +353,40 @@ export class ParameterSimulator extends EventEmitter {
     this.engFrequency = Math.max(minFreq, Math.min(maxFreq, frequencyMs));
     console.log(`[Simulator] EngValue frequency changed to ${this.engFrequency}ms`);
     this.emit('frequencyChanged', { type: 'eng', frequency: this.engFrequency });
+  }
+
+  /**
+   * Get force SPC emission flag
+   */
+  getForceSpcEmission(): boolean {
+    return this.forceSpcEmission;
+  }
+
+  /**
+   * Set force SPC emission flag
+   * When true, SPC samples are emitted regardless of acquisition state
+   */
+  setForceSpcEmission(force: boolean): void {
+    this.forceSpcEmission = force;
+    console.log(`[Simulator] Force SPC emission ${force ? 'enabled' : 'disabled'}`);
+    this.emit('forceSpcEmissionChanged', { forceSpcEmission: force });
+  }
+
+  getSampleValueOverride(index: number): number | null {
+    return this.sampleValueOverrides.has(index) ? this.sampleValueOverrides.get(index)! : null;
+  }
+
+  getSampleValueOverrides(): Record<number, number> {
+    return Object.fromEntries(this.sampleValueOverrides);
+  }
+
+  setSampleValueOverride(index: number, value: number | null): void {
+    if (value === null) {
+      this.sampleValueOverrides.delete(index);
+    } else {
+      this.sampleValueOverrides.set(index, value);
+    }
+    console.log(`[Simulator] SampleValue override P${String(index).padStart(2,'0')}: ${value !== null ? value : 'auto'}`);
   }
 
   /**

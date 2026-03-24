@@ -50,6 +50,7 @@ export class CCSimulatorServer {
   private options: CLIOptions;
   private parameterConfigs: ParameterConfig[];
   private stateSaveIntervalId: NodeJS.Timeout | null = null;
+  private addressSpaceBuilder: AddressSpaceBuilder | null = null;
   private connectionBlockingEnabled: boolean = false;
   private connectionBlockingIntervalId: NodeJS.Timeout | null = null;
 
@@ -243,14 +244,14 @@ export class CCSimulatorServer {
 
     // Build address space
     const addressSpace = this.server.engine.addressSpace!;
-    const builder = new AddressSpaceBuilder(
+    this.addressSpaceBuilder = new AddressSpaceBuilder(
       addressSpace,
       this.historyStore,
       this.simulator,
       this.stateMachine,
       this.options
     );
-    builder.build(this.parameterConfigs);
+    this.addressSpaceBuilder.build(this.parameterConfigs);
 
     // Start server
     await this.server.start();
@@ -369,6 +370,22 @@ export class CCSimulatorServer {
    */
   getSimulator(): ParameterSimulator {
     return this.simulator;
+  }
+
+  getHeartbeatSimulationEnabled(): boolean {
+    return this.addressSpaceBuilder?.getHeartbeatSimulationEnabled() ?? true;
+  }
+
+  setHeartbeatSimulationEnabled(enabled: boolean): void {
+    this.addressSpaceBuilder?.setHeartbeatSimulationEnabled(enabled);
+  }
+
+  getStorageFillOverride(): number | null {
+    return this.addressSpaceBuilder?.getStorageFillOverride() ?? null;
+  }
+
+  setStorageFillOverride(value: number | null): void {
+    this.addressSpaceBuilder?.setStorageFillOverride(value);
   }
 
   /**

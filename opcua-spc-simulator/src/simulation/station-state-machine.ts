@@ -121,7 +121,7 @@ export class StationStateMachine extends EventEmitter {
         break;
 
       case 'RESET':
-        transitioned = this.handleReset();
+        transitioned = this.handleReset(event.resetToNotConfigured);
         break;
     }
 
@@ -246,9 +246,10 @@ export class StationStateMachine extends EventEmitter {
 
   /**
    * Handle RESET event
-   * Valid from: AcquisitionStopped → Idle (default) or NotConfigured (if resetToNotConfigured)
+   * Valid from: AcquisitionStopped
+   * @param toNotConfigured - If true, reset to NotConfigured state; otherwise reset to Idle
    */
-  private handleReset(): boolean {
+  private handleReset(toNotConfigured?: boolean): boolean {
     if (this.state.status !== AcquisitionStatus.AcquisitionStopped) {
       return false;
     }
@@ -259,14 +260,12 @@ export class StationStateMachine extends EventEmitter {
       this.autoResetTimer = null;
     }
 
-    this.state.status = this.resetToNotConfigured
-      ? AcquisitionStatus.NotConfigured
-      : AcquisitionStatus.Idle;
+    this.state.status = toNotConfigured ? AcquisitionStatus.NotConfigured : AcquisitionStatus.Idle;
     this.state.startedAt = null;
     this.state.stoppedAt = null;
     this.state.configurationError = null;
 
-    this.emit('reset');
+    this.emit('reset', { toNotConfigured });
 
     return true;
   }

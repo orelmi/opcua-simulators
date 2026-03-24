@@ -216,7 +216,7 @@ export type StationEvent =
   | { type: 'CONFIGURATION_ERROR'; error: string }
   | { type: 'START_ACQUISITION'; trigger: TriggerType }
   | { type: 'STOP_ACQUISITION'; trigger: TriggerType }
-  | { type: 'RESET' };
+  | { type: 'RESET'; resetToNotConfigured?: boolean };
 
 /**
  * Station state

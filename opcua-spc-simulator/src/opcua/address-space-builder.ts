@@ -97,6 +97,8 @@ export class AddressSpaceBuilder {
   private stationNodes: StationNodes | null = null;
   private options: CLIOptions;
   private numericIdCounter: number = 6000; // Start at 6000 for custom nodes
+  private heartbeatSimulationEnabled: boolean = true;
+  private storageFillOverride: number | null = null;
 
   constructor(
     addressSpace: AddressSpace,
@@ -121,6 +123,31 @@ export class AddressSpaceBuilder {
     this.simulator = simulator;
     this.stateMachine = stateMachine;
     this.options = options;
+  }
+
+  getHeartbeatSimulationEnabled(): boolean {
+    return this.heartbeatSimulationEnabled;
+  }
+
+  setHeartbeatSimulationEnabled(enabled: boolean): void {
+    this.heartbeatSimulationEnabled = enabled;
+    console.log(`[OPC UA] Heartbeat simulation ${enabled ? 'enabled' : 'disabled'}`);
+  }
+
+  getStorageFillOverride(): number | null {
+    return this.storageFillOverride;
+  }
+
+  setStorageFillOverride(value: number | null): void {
+    this.storageFillOverride = value;
+    if (value !== null && this.stationNodes) {
+      this.stationNodes.storageFillPercentage.setValueFromSource(
+        new Variant({ dataType: DataType.Double, value }),
+        StatusCodes.Good,
+        new Date()
+      );
+    }
+    console.log(`[OPC UA] StorageFillPercentage ${value !== null ? `set to ${value}%` : 'back to auto'}`);
   }
 
   /**
@@ -642,6 +669,7 @@ export class AddressSpaceBuilder {
 
     // Bind Heartbeat -> HeartbeatAck copy mechanism
     heartbeatVar.on('value_changed', (dataValue) => {
+      if (!this.heartbeatSimulationEnabled) return;
       heartbeatAckVar.setValueFromSource(
         new Variant({ dataType: DataType.UInt64, arrayType: VariantArrayType.Scalar, value: dataValue.value.value }),
         StatusCodes.Good,
@@ -1143,14 +1171,16 @@ export class AddressSpaceBuilder {
         );
       }
 
-      // Slowly increase storage fill percentage (realistic behavior)
-      const currentFill = (storageFillPercentage.readValue().value.value as number) || 10;
-      const newFill = Math.min(95, currentFill + 0.001); // Very slow increase
-      storageFillPercentage.setValueFromSource(
-        new Variant({ dataType: DataType.Double, value: newFill }),
-        StatusCodes.Good,
-        now
-      );
+      // Slowly increase storage fill percentage (realistic behavior) - skip if manual override
+      if (this.storageFillOverride === null) {
+        const currentFill = (storageFillPercentage.readValue().value.value as number) || 10;
+        const newFill = Math.min(95, currentFill + 0.001); // Very slow increase
+        storageFillPercentage.setValueFromSource(
+          new Variant({ dataType: DataType.Double, value: newFill }),
+          StatusCodes.Good,
+          now
+        );
+      }
 
       // Update DoubleInfo1 - perpetual revolution 0-360°
       revolutionAngle = (revolutionAngle + 1) % 360; // 1° per second = full revolution in 6 minutes

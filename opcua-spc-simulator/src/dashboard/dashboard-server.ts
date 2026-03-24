@@ -29,6 +29,10 @@ export interface OpcuaClientsAccessor {
   disconnectAllClients(): number;
   setConnectionBlocking(enabled: boolean): number;
   isConnectionBlocked(): boolean;
+  getHeartbeatSimulationEnabled(): boolean;
+  setHeartbeatSimulationEnabled(enabled: boolean): void;
+  getStorageFillOverride(): number | null;
+  setStorageFillOverride(value: number | null): void;
 }
 
 export interface PersistenceStore {
@@ -60,12 +64,16 @@ interface DashboardState {
     spcFrequency: number;
     engFrequency: number;
   };
+  forceSpcEmission: boolean;
+  heartbeatSimulationEnabled: boolean;
+  storageFillOverride: number | null;
   parameters: {
     index: number;
     name: string;
     enabled: boolean;
     sampleValue: number;
     engValue: number;
+    sampleValueOverride: number | null;
     sampleIndex: number;
     unit: string;
     target: number;
@@ -126,6 +134,7 @@ export class DashboardServer {
       enabled: pState.config.enabled,
       sampleValue: pState.sampleValue,
       engValue: pState.engValue,
+      sampleValueOverride: this.options.simulator.getSampleValueOverride(index),
       sampleIndex: pState.sampleIndex,
       unit: pState.config.unit,
       target: pState.config.toleranceLimits.target,
@@ -159,6 +168,9 @@ export class DashboardServer {
         params: this.options.simulator.getScenarioParams(),
       },
       frequencies,
+      forceSpcEmission: this.options.simulator.getForceSpcEmission(),
+      heartbeatSimulationEnabled: this.options.opcuaServer?.getHeartbeatSimulationEnabled() ?? true,
+      storageFillOverride: this.options.opcuaServer?.getStorageFillOverride() ?? null,
       parameters,
       availableScenarios: listScenarios(),
       uptime: process.uptime(),
@@ -228,6 +240,91 @@ export class DashboardServer {
         res.json({ success: true, params: this.options.simulator.getScenarioParams() });
       } catch (error) {
         res.status(500).json({ error: `Failed to set scenario params: ${error}` });
+      }
+    });
+
+    // API: Set heartbeat simulation
+    this.app.post('/api/heartbeat-simulation', (req: Request, res: Response) => {
+      const { enabled } = req.body;
+
+      if (typeof enabled !== 'boolean') {
+        return res.status(400).json({ error: 'enabled must be boolean' });
+      }
+
+      if (!this.options.opcuaServer) {
+        return res.status(400).json({ error: 'OPC UA server not available' });
+      }
+
+      try {
+        this.options.opcuaServer.setHeartbeatSimulationEnabled(enabled);
+        this.broadcastState();
+        res.json({
+          success: true,
+          heartbeatSimulationEnabled: this.options.opcuaServer.getHeartbeatSimulationEnabled()
+        });
+      } catch (error) {
+        res.status(500).json({ error: `Failed to set heartbeat simulation: ${error}` });
+      }
+    });
+
+    // API: Set storage fill percentage override
+    this.app.post('/api/storage-fill', (req: Request, res: Response) => {
+      const { value } = req.body;
+
+      if (typeof value !== 'number' || value < 0 || value > 100) {
+        return res.status(400).json({ error: 'value must be a number between 0 and 100' });
+      }
+
+      if (!this.options.opcuaServer) {
+        return res.status(400).json({ error: 'OPC UA server not available' });
+      }
+
+      try {
+        this.options.opcuaServer.setStorageFillOverride(value);
+        this.broadcastState();
+        res.json({ success: true, value });
+      } catch (error) {
+        res.status(500).json({ error: `Failed to set storage fill: ${error}` });
+      }
+    });
+
+    // API: Force SampleValue per parameter (null = auto)
+    this.app.post('/api/sample-value-override', (req: Request, res: Response) => {
+      const { parameterIndex, value } = req.body;
+
+      if (typeof parameterIndex !== 'number') {
+        return res.status(400).json({ error: 'parameterIndex must be a number' });
+      }
+      if (value !== null && typeof value !== 'number') {
+        return res.status(400).json({ error: 'value must be a number or null' });
+      }
+
+      try {
+        this.options.simulator.setSampleValueOverride(parameterIndex, value);
+        this.broadcastState();
+        res.json({ success: true, parameterIndex, sampleValueOverride: this.options.simulator.getSampleValueOverride(parameterIndex) });
+      } catch (error) {
+        res.status(500).json({ error: `Failed to set SampleValue override: ${error}` });
+      }
+    });
+
+    // API: Set force SPC emission
+    this.app.post('/api/force-spc-emission', (req: Request, res: Response) => {
+      const { forceSpcEmission } = req.body;
+
+      if (typeof forceSpcEmission !== 'boolean') {
+        return res.status(400).json({ error: 'forceSpcEmission must be boolean' });
+      }
+
+      try {
+        this.options.simulator.setForceSpcEmission(forceSpcEmission);
+        this.broadcastState();
+        res.json({
+          success: true,
+          forceSpcEmission: this.options.simulator.getForceSpcEmission()
+        });
+      } catch (error) {
+        res.status(500).json({ error: `Failed to set force SPC emission: ${error}` });
       }
     });
 
@@ -370,7 +467,11 @@ export class DashboardServer {
             this.options.stateMachine.dispatch({ type: 'STOP_ACQUISITION', trigger: 0 });
             break;
           case 'reset':
-            this.options.stateMachine.dispatch({ type: 'RESET' });
+            const { resetToNotConfigured } = req.body;
+            this.options.stateMachine.dispatch({
+              type: 'RESET',
+              resetToNotConfigured: resetToNotConfigured === true
+            });
             break;
         }
         this.broadcastState();
@@ -560,6 +661,13 @@ export class DashboardServer {
     .status-3 { background: #5c3d2e; color: #ffa500; }
     .status-8 { background: #3d3d1e; color: #ffff4e; }
     .status-9 { background: #5c2e2e; color: #ff4e4e; }
+    .force-spc-enabled {
+      color: #4eff4e;
+      font-weight: 600;
+    }
+    .force-spc-disabled {
+      color: #888;
+    }
     .info-row {
       display: flex;
       justify-content: space-between;
@@ -1095,11 +1203,31 @@ export class DashboardServer {
             <span class="info-label">Stopped At</span>
             <span class="info-value" id="stoppedAt">--</span>
           </div>
+          <div class="info-row">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: #888;">
+              <input type="checkbox" id="resetToNotConfiguredCheck" style="cursor: pointer; width: 16px; height: 16px;">
+              <span>Reset to Not Configured</span>
+            </label>
+          </div>
           <div class="commands">
             <button id="btnConfigure" onclick="sendCommand('configure')">Configure</button>
             <button id="btnStart" onclick="sendCommand('start')">Start</button>
             <button id="btnStop" onclick="sendCommand('stop')" class="danger">Stop</button>
             <button id="btnReset" onclick="sendCommand('reset')">Reset</button>
+          </div>
+          <div class="info-row" style="margin-top: 10px;">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: #888;">
+              <input type="checkbox" id="heartbeatSimCheck" checked onchange="toggleHeartbeatSimulation(this.checked)" style="cursor: pointer; width: 16px; height: 16px;">
+              <span>Simulate Heartbeat</span>
+            </label>
+          </div>
+          <div class="frequency-control" style="margin-top: 10px;">
+            <label style="color: #888;">Storage Fill: <span id="storageFillValue">--</span>%</label>
+            <input type="range" id="storageFillSlider" min="0" max="100" step="1" value="50"
+              onmousedown="storageFillSliderActive = true" ontouchstart="storageFillSliderActive = true"
+              onmouseup="storageFillSliderActive = false; setStorageFill(this.value)"
+              ontouchend="storageFillSliderActive = false; setStorageFill(this.value)"
+              oninput="document.getElementById('storageFillValue').textContent = this.value">
           </div>
         </div>
 
@@ -1121,6 +1249,21 @@ export class DashboardServer {
               ontouchend="engSliderActive = false; setFrequency('eng', this.value)"
               oninput="document.getElementById('engFreqValue').textContent = this.value">
           </div>
+        </div>
+
+        <div class="panel">
+          <h2>SPC Emission Control</h2>
+          <div class="info-row">
+            <span class="info-label">Force SPC Emission</span>
+            <span class="info-value" id="forceSpcStatus">--</span>
+          </div>
+          <div style="margin-top: 10px; font-size: 0.85rem; color: #888; line-height: 1.4;">
+            When enabled, SPC samples (SampleValue/SampleIndex) are emitted continuously, regardless of acquisition state.
+          </div>
+          <button id="btnToggleForceSpc" onclick="toggleForceSpcEmission()"
+                  style="width: 100%; margin-top: 10px;">
+            Toggle Force SPC
+          </button>
         </div>
 
         <div class="panel">
@@ -1264,6 +1407,7 @@ export class DashboardServer {
     // Track slider interaction to prevent updates while dragging
     let spcSliderActive = false;
     let engSliderActive = false;
+    let storageFillSliderActive = false;
 
     // Sparkline data storage - keyed by parameter index
     const sparklineData = new Map(); // Map<index, { sample: number[], eng: number[], lastSampleIndex: number }>
@@ -1588,53 +1732,125 @@ export class DashboardServer {
         }
       }
 
+      // Update force SPC emission status
+      if (typeof data.forceSpcEmission !== 'undefined') {
+        const forceSpcStatus = document.getElementById('forceSpcStatus');
+        const forceSpcBtn = document.getElementById('btnToggleForceSpc');
+
+        if (data.forceSpcEmission) {
+          forceSpcStatus.textContent = 'ENABLED';
+          forceSpcStatus.className = 'info-value force-spc-enabled';
+          forceSpcBtn.textContent = 'Disable Force SPC';
+          forceSpcBtn.style.background = '#e74c3c';
+        } else {
+          forceSpcStatus.textContent = 'Disabled';
+          forceSpcStatus.className = 'info-value force-spc-disabled';
+          forceSpcBtn.textContent = 'Enable Force SPC';
+          forceSpcBtn.style.background = '#4ecca3';
+        }
+      }
+
+      // Update heartbeat simulation checkbox
+      if (typeof data.heartbeatSimulationEnabled !== 'undefined') {
+        const heartbeatCheck = document.getElementById('heartbeatSimCheck');
+        if (heartbeatCheck) {
+          heartbeatCheck.checked = data.heartbeatSimulationEnabled;
+        }
+      }
+
+      // Update storage fill slider (skip if user is dragging)
+      if (!storageFillSliderActive && data.storageFillOverride !== undefined) {
+        const val = data.storageFillOverride !== null ? data.storageFillOverride : '--';
+        document.getElementById('storageFillValue').textContent = val;
+        if (data.storageFillOverride !== null) {
+          document.getElementById('storageFillSlider').value = data.storageFillOverride;
+        }
+      }
+
+
+
       // Update parameters and sparkline data
       data.parameters.forEach(p => updateSparklineData(p));
 
       const grid = document.getElementById('parametersGrid');
-      grid.innerHTML = data.parameters.map(p => {
-        const limitsJson = JSON.stringify({ usl: p.usl, lsl: p.lsl, ucl: p.ucl, lcl: p.lcl, target: p.target }).replace(/"/g, '&quot;');
-        return \`
-        <div class="param-card \${p.enabled ? '' : 'disabled'}">
-          <div class="param-header">
-            <span class="param-name">\${p.name}</span>
-            <span class="param-index">P\${String(p.index).padStart(2, '0')}</span>
-          </div>
-          <div class="param-values">
-            <div class="param-value" onclick="openChartModal(\${p.index}, '\${p.name}', 'sample', '\${p.unit}', \${limitsJson})" title="Click to view chart">
-              <div class="param-value-label">Sample Value</div>
-              <div class="param-value-number">\${formatNumber(p.sampleValue)}<span class="param-unit">\${p.unit}</span></div>
+
+      if (grid.children.length !== data.parameters.length) {
+        // Full initial render (first load or parameter count change)
+        grid.innerHTML = data.parameters.map(p => {
+          const limitsJson = JSON.stringify({ usl: p.usl, lsl: p.lsl, ucl: p.ucl, lcl: p.lcl, target: p.target }).replace(/"/g, '&quot;');
+          return \`
+          <div class="param-card \${p.enabled ? '' : 'disabled'}" id="pcard-\${p.index}">
+            <div class="param-header">
+              <span class="param-name">\${p.name}</span>
+              <span class="param-index">P\${String(p.index).padStart(2, '0')}</span>
             </div>
-            <div class="param-value" onclick="openChartModal(\${p.index}, '\${p.name}', 'eng', '\${p.unit}', \${limitsJson})" title="Click to view chart">
-              <div class="param-value-label">Eng Value</div>
-              <div class="param-value-number">\${formatNumber(p.engValue)}<span class="param-unit">\${p.unit}</span></div>
+            <div class="param-values">
+              <div class="param-value" onclick="openChartModal(\${p.index}, '\${p.name}', 'sample', '\${p.unit}', \${limitsJson})" title="Click to view chart">
+                <div class="param-value-label">Sample Value</div>
+                <div class="param-value-number" id="psv-\${p.index}">\${formatNumber(p.sampleValue)}<span class="param-unit">\${p.unit}</span></div>
+              </div>
+              <div class="param-value" onclick="openChartModal(\${p.index}, '\${p.name}', 'eng', '\${p.unit}', \${limitsJson})" title="Click to view chart">
+                <div class="param-value-label">Eng Value</div>
+                <div class="param-value-number" id="pev-\${p.index}">\${formatNumber(p.engValue)}<span class="param-unit">\${p.unit}</span></div>
+              </div>
+            </div>
+            <div class="param-sparklines">
+              <div class="sparkline-container" onclick="openChartModal(\${p.index}, '\${p.name}', 'sample', '\${p.unit}', \${limitsJson})" title="Click to view chart">
+                <div class="sparkline-label">SampleValue</div>
+                <svg class="sparkline sparkline-sample" viewBox="0 0 100 30" preserveAspectRatio="none">
+                  <path id="pss-\${p.index}" d="\${renderSparkline(p.index, 'sample')}"/>
+                </svg>
+              </div>
+              <div class="sparkline-container" onclick="openChartModal(\${p.index}, '\${p.name}', 'eng', '\${p.unit}', \${limitsJson})" title="Click to view chart">
+                <div class="sparkline-label">EngValue</div>
+                <svg class="sparkline sparkline-eng" viewBox="0 0 100 30" preserveAspectRatio="none">
+                  <path id="pes-\${p.index}" d="\${renderSparkline(p.index, 'eng')}"/>
+                </svg>
+              </div>
+            </div>
+            <div id="pfi-\${p.index}" style="text-align: center; margin-top: 8px; color: #666; font-size: 0.8rem;">
+              Sample #\${p.sampleIndex} | Target: \${formatNumber(p.target)}
+            </div>
+            <div class="param-limits">
+              <div class="param-limit tolerance"><span>LSL</span><span class="param-limit-value">\${formatNumber(p.lsl)}</span></div>
+              <div class="param-limit tolerance"><span>USL</span><span class="param-limit-value">\${formatNumber(p.usl)}</span></div>
+              <div class="param-limit control"><span>LCL</span><span class="param-limit-value">\${formatNumber(p.lcl)}</span></div>
+              <div class="param-limit control"><span>UCL</span><span class="param-limit-value">\${formatNumber(p.ucl)}</span></div>
+            </div>
+            <div style="margin-top: 8px; display: flex; align-items: center; gap: 6px;">
+              <label style="color: #888; font-size: 0.78rem; display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap;">
+                <input type="checkbox" id="pcb-\${p.index}" \${p.sampleValueOverride !== null ? 'checked' : ''}
+                  onchange="toggleSampleValueMode(\${p.index}, this.checked)"
+                  style="cursor: pointer; width: 13px; height: 13px;">
+                Force SampleVal
+              </label>
+              <input type="text" inputmode="decimal" id="pinp-\${p.index}"
+                value="\${p.sampleValueOverride !== null ? p.sampleValueOverride.toFixed(2) : ''}"
+                \${p.sampleValueOverride === null ? 'disabled' : ''}
+                placeholder="auto"
+                style="flex: 1; min-width: 0; padding: 3px 6px; border-radius: 4px; border: 1px solid \${p.sampleValueOverride !== null ? '#4ecca3' : '#333'}; background: #0f0f23; color: \${p.sampleValueOverride !== null ? '#eee' : '#666'}; font-size: 0.78rem;"
+                onchange="setSampleValueOverride(\${p.index}, this.value)">
             </div>
           </div>
-          <div class="param-sparklines">
-            <div class="sparkline-container" onclick="openChartModal(\${p.index}, '\${p.name}', 'sample', '\${p.unit}', \${limitsJson})" title="Click to view chart">
-              <div class="sparkline-label">SampleValue</div>
-              <svg class="sparkline sparkline-sample" viewBox="0 0 100 30" preserveAspectRatio="none">
-                <path d="\${renderSparkline(p.index, 'sample')}"/>
-              </svg>
-            </div>
-            <div class="sparkline-container" onclick="openChartModal(\${p.index}, '\${p.name}', 'eng', '\${p.unit}', \${limitsJson})" title="Click to view chart">
-              <div class="sparkline-label">EngValue</div>
-              <svg class="sparkline sparkline-eng" viewBox="0 0 100 30" preserveAspectRatio="none">
-                <path d="\${renderSparkline(p.index, 'eng')}"/>
-              </svg>
-            </div>
-          </div>
-          <div style="text-align: center; margin-top: 8px; color: #666; font-size: 0.8rem;">
-            Sample #\${p.sampleIndex} | Target: \${formatNumber(p.target)}
-          </div>
-          <div class="param-limits">
-            <div class="param-limit tolerance"><span>LSL</span><span class="param-limit-value">\${formatNumber(p.lsl)}</span></div>
-            <div class="param-limit tolerance"><span>USL</span><span class="param-limit-value">\${formatNumber(p.usl)}</span></div>
-            <div class="param-limit control"><span>LCL</span><span class="param-limit-value">\${formatNumber(p.lcl)}</span></div>
-            <div class="param-limit control"><span>UCL</span><span class="param-limit-value">\${formatNumber(p.ucl)}</span></div>
-          </div>
-        </div>
-      \`;}).join('');
+          \`;
+        }).join('');
+      } else {
+        // In-place update: only refresh display values and sparklines, never touch inputs
+        data.parameters.forEach(p => {
+          const card = document.getElementById(\`pcard-\${p.index}\`);
+          if (card) card.className = \`param-card \${p.enabled ? '' : 'disabled'}\`;
+          const sv = document.getElementById(\`psv-\${p.index}\`);
+          if (sv) sv.innerHTML = \`\${formatNumber(p.sampleValue)}<span class="param-unit">\${p.unit}</span>\`;
+          const ev = document.getElementById(\`pev-\${p.index}\`);
+          if (ev) ev.innerHTML = \`\${formatNumber(p.engValue)}<span class="param-unit">\${p.unit}</span>\`;
+          const fi = document.getElementById(\`pfi-\${p.index}\`);
+          if (fi) fi.textContent = \`Sample #\${p.sampleIndex} | Target: \${formatNumber(p.target)}\`;
+          const ss = document.getElementById(\`pss-\${p.index}\`);
+          if (ss) ss.setAttribute('d', renderSparkline(p.index, 'sample'));
+          const es = document.getElementById(\`pes-\${p.index}\`);
+          if (es) es.setAttribute('d', renderSparkline(p.index, 'eng'));
+        });
+      }
 
       // Update chart if open
       if (currentChartParam !== null) {
@@ -1756,7 +1972,19 @@ async function resetPersistence() {
 
     async function sendCommand(cmd) {
       try {
-        const res = await fetch('/api/command/' + cmd, { method: 'POST' });
+        const options = {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        };
+
+        // For reset command, read checkbox state
+        if (cmd === 'reset') {
+          const checkbox = document.getElementById('resetToNotConfiguredCheck');
+          const resetToNotConfigured = checkbox ? checkbox.checked : false;
+          options.body = JSON.stringify({ resetToNotConfigured });
+        }
+
+        const res = await fetch('/api/command/' + cmd, options);
         const data = await res.json();
         if (!data.success) {
           alert('Command failed: ' + data.error);
@@ -1860,6 +2088,105 @@ async function resetPersistence() {
     async function resetScenarioTime() {
       try {
         await fetch('/api/scenario-reset-time', { method: 'POST' });
+      } catch (error) {
+        alert('Error: ' + error.message);
+      }
+    }
+
+    async function setStorageFill(value) {
+      try {
+        const res = await fetch('/api/storage-fill', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value: parseInt(value, 10) })
+        });
+        const data = await res.json();
+        if (!data.success) {
+          alert('Failed to set storage fill: ' + data.error);
+        }
+      } catch (error) {
+        alert('Error: ' + error.message);
+      }
+    }
+
+    function toggleSampleValueMode(paramIndex, manual) {
+      const inp = document.getElementById(\`pinp-\${paramIndex}\`);
+      if (manual) {
+        // Read current displayed sample value to use as initial forced value
+        const svEl = document.getElementById(\`psv-\${paramIndex}\`);
+        const currentVal = svEl ? parseFloat(svEl.textContent) : 0;
+        const initVal = isNaN(currentVal) ? 0 : Math.round(currentVal * 100) / 100;
+        if (inp) {
+          inp.disabled = false;
+          inp.value = initVal.toFixed(2);
+          inp.style.borderColor = '#4ecca3';
+          inp.style.color = '#eee';
+          inp.focus();
+          inp.select();
+        }
+        setSampleValueOverride(paramIndex, initVal);
+      } else {
+        if (inp) {
+          inp.disabled = true;
+          inp.value = '';
+          inp.style.borderColor = '#333';
+          inp.style.color = '#666';
+        }
+        setSampleValueOverride(paramIndex, null);
+      }
+    }
+
+    async function setSampleValueOverride(paramIndex, value) {
+      let parsed = value === null ? null : parseFloat(value);
+      if (parsed !== null && isNaN(parsed)) return;
+      // Round to 2 decimal places
+      if (parsed !== null) parsed = Math.round(parsed * 100) / 100;
+      try {
+        const res = await fetch('/api/sample-value-override', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parameterIndex: paramIndex, value: parsed })
+        });
+        const data = await res.json();
+        if (!data.success) {
+          alert('Failed to set SampleValue override: ' + data.error);
+        }
+      } catch (error) {
+        alert('Error: ' + error.message);
+      }
+    }
+
+    async function toggleHeartbeatSimulation(enabled) {
+      try {
+        const res = await fetch('/api/heartbeat-simulation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        const data = await res.json();
+        if (!data.success) {
+          alert('Failed to toggle heartbeat simulation: ' + data.error);
+        }
+      } catch (error) {
+        alert('Error: ' + error.message);
+      }
+    }
+
+    async function toggleForceSpcEmission() {
+      if (!state) return;
+
+      const newState = !state.forceSpcEmission;
+
+      try {
+        const res = await fetch('/api/force-spc-emission', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ forceSpcEmission: newState })
+        });
+        const data = await res.json();
+        if (!data.success) {
+          alert('Failed to toggle force SPC emission: ' + data.error);
+        }
       } catch (error) {
         alert('Error: ' + error.message);
       }
