@@ -17,6 +17,7 @@
  * 4. AcquisitionStarted -> Stop command -> AcquisitionStopped
  * 5. AcquisitionStopped -> Start command -> AcquisitionStarted (direct restart)
  * 5b. AcquisitionStopped -> Reset command -> Idle (alternative)
+ * 5c. AcquisitionStopped -> Reset command -> NotConfigured (deconfiguration, optional mode)
  *
  * Transitions:
  * - NotConfigured -> Configuring (Configure command)
@@ -28,6 +29,7 @@
  * - AcquisitionStarted -> AcquisitionStopped (Stop command)
  * - AcquisitionStopped -> AcquisitionStarted (Start command - direct restart)
  * - AcquisitionStopped -> Idle (Reset command)
+ * - AcquisitionStopped -> NotConfigured (Reset command - deconfiguration, optional mode)
  */
 
 import { EventEmitter } from 'events';
@@ -37,6 +39,8 @@ export class StationStateMachine extends EventEmitter {
   private state: StationState;
   private autoResetDelay: number;
   private autoResetTimer: NodeJS.Timeout | null = null;
+  /** When true, Reset from AcquisitionStopped returns to NotConfigured instead of Idle */
+  public resetToNotConfigured: boolean = false;
 
   /**
    * @param initialStatusOrAutoResetDelay - Initial status to restore OR delay in ms before auto-reset (0 = disabled)
@@ -135,7 +139,7 @@ export class StationStateMachine extends EventEmitter {
 
   /**
    * Handle CONFIGURE event
-   * Valid from: NotConfigured, Idle, ConfigurationError
+   * Valid from: NotConfigured, Idle, ConfigurationError → Configuring
    */
   private handleConfigure(): boolean {
     const validStates = [
@@ -242,7 +246,7 @@ export class StationStateMachine extends EventEmitter {
 
   /**
    * Handle RESET event
-   * Valid from: AcquisitionStopped
+   * Valid from: AcquisitionStopped → Idle (default) or NotConfigured (if resetToNotConfigured)
    */
   private handleReset(): boolean {
     if (this.state.status !== AcquisitionStatus.AcquisitionStopped) {
@@ -255,9 +259,12 @@ export class StationStateMachine extends EventEmitter {
       this.autoResetTimer = null;
     }
 
-    this.state.status = AcquisitionStatus.Idle;
+    this.state.status = this.resetToNotConfigured
+      ? AcquisitionStatus.NotConfigured
+      : AcquisitionStatus.Idle;
     this.state.startedAt = null;
     this.state.stoppedAt = null;
+    this.state.configurationError = null;
 
     this.emit('reset');
 

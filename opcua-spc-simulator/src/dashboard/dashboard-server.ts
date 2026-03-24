@@ -27,6 +27,8 @@ export interface OpcuaClientsAccessor {
     clients: OpcuaClientInfo[];
   };
   disconnectAllClients(): number;
+  setConnectionBlocking(enabled: boolean): number;
+  isConnectionBlocked(): boolean;
 }
 
 export interface PersistenceStore {
@@ -79,6 +81,7 @@ interface DashboardState {
     channelCount: number;
     clients: OpcuaClientInfo[];
   };
+  connectionBlocked: boolean;
 }
 
 export class DashboardServer {
@@ -137,6 +140,11 @@ export class DashboardServer {
       ? this.options.opcuaServer.getConnectedClientsInfo()
       : { sessionCount: 0, channelCount: 0, clients: [] };
 
+    // Get connection blocking status
+    const connectionBlocked = this.options.opcuaServer
+      ? this.options.opcuaServer.isConnectionBlocked()
+      : false;
+
     return {
       stationState: {
         status: state.status,
@@ -155,6 +163,7 @@ export class DashboardServer {
       availableScenarios: listScenarios(),
       uptime: process.uptime(),
       opcuaClients,
+      connectionBlocked,
     };
   }
 
@@ -284,6 +293,37 @@ export class DashboardServer {
       } catch (error) {
         res.status(500).json({ error: `Failed to disconnect clients: ${error}` });
       }
+    });
+
+    // API: Toggle connection blocking mode
+    this.app.post('/api/connection-blocking', (req: Request, res: Response) => {
+      if (!this.options.opcuaServer) {
+        return res.status(400).json({ error: 'OPC UA server not available' });
+      }
+
+      try {
+        const { enabled } = req.body;
+        const disconnectedCount = this.options.opcuaServer.setConnectionBlocking(enabled);
+        this.broadcastState();
+        res.json({
+          success: true,
+          enabled,
+          disconnectedCount,
+          message: enabled
+            ? `Connection blocking enabled, ${disconnectedCount} client(s) disconnected`
+            : 'Connection blocking disabled',
+        });
+      } catch (error) {
+        res.status(500).json({ error: `Failed to set connection blocking: ${error}` });
+      }
+    });
+
+    // API: Get connection blocking status
+    this.app.get('/api/connection-blocking', (_req: Request, res: Response) => {
+      if (!this.options.opcuaServer) {
+        return res.json({ enabled: false });
+      }
+      res.json({ enabled: this.options.opcuaServer.isConnectionBlocked() });
     });
 
     // API: Reset persistence (clear saved state)
@@ -890,6 +930,61 @@ export class DashboardServer {
         bottom: 20px;
       }
     }
+    /* Toggle switch styles */
+    .toggle-container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-bottom: 1px solid #222;
+    }
+    .toggle-label {
+      color: #888;
+      font-size: 0.9rem;
+    }
+    .toggle-switch {
+      position: relative;
+      width: 50px;
+      height: 26px;
+    }
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #333;
+      transition: 0.3s;
+      border-radius: 26px;
+    }
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 20px;
+      width: 20px;
+      left: 3px;
+      bottom: 3px;
+      background-color: #888;
+      transition: 0.3s;
+      border-radius: 50%;
+    }
+    .toggle-switch input:checked + .toggle-slider {
+      background-color: #e74c3c;
+    }
+    .toggle-switch input:checked + .toggle-slider:before {
+      transform: translateX(24px);
+      background-color: white;
+    }
+    .blocking-active {
+      color: #e74c3c;
+      font-weight: 600;
+    }
     /* Modal styles - non-blocking overlay, draggable */
     .modal {
       display: none;
@@ -1030,6 +1125,13 @@ export class DashboardServer {
 
         <div class="panel">
           <h2>OPC UA Clients</h2>
+          <div class="toggle-container">
+            <span class="toggle-label" id="blockingLabel">Block Connections</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="blockingToggle" onchange="toggleConnectionBlocking(this.checked)">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
           <div class="info-row">
             <span class="info-label">Sessions</span>
             <span class="info-value" id="sessionCount">0</span>
@@ -1557,6 +1659,20 @@ export class DashboardServer {
           \`).join('');
         }
       }
+
+      // Update connection blocking toggle
+      const blockingToggle = document.getElementById('blockingToggle');
+      const blockingLabel = document.getElementById('blockingLabel');
+      if (blockingToggle && data.connectionBlocked !== undefined) {
+        blockingToggle.checked = data.connectionBlocked;
+        if (data.connectionBlocked) {
+          blockingLabel.textContent = 'Blocking Active';
+          blockingLabel.className = 'toggle-label blocking-active';
+        } else {
+          blockingLabel.textContent = 'Block Connections';
+          blockingLabel.className = 'toggle-label';
+        }
+      }
     }
 
     async function disconnectClients() {
@@ -1588,6 +1704,29 @@ async function resetPersistence() {
         alert('Erreur: ' + error.message);
       }
     }
+
+    async function toggleConnectionBlocking(enabled) {
+      try {
+        const res = await fetch('/api/connection-blocking', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        const data = await res.json();
+        if (data.success) {
+          console.log(data.message);
+        } else {
+          alert('Failed to toggle blocking: ' + data.error);
+          // Revert toggle state on error
+          document.getElementById('blockingToggle').checked = !enabled;
+        }
+      } catch (error) {
+        alert('Error: ' + error.message);
+        // Revert toggle state on error
+        document.getElementById('blockingToggle').checked = !enabled;
+      }
+    }
+
     function connectWebSocket() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(protocol + '//' + window.location.host);

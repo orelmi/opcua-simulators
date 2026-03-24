@@ -50,6 +50,8 @@ export class CCSimulatorServer {
   private options: CLIOptions;
   private parameterConfigs: ParameterConfig[];
   private stateSaveIntervalId: NodeJS.Timeout | null = null;
+  private connectionBlockingEnabled: boolean = false;
+  private connectionBlockingIntervalId: NodeJS.Timeout | null = null;
 
   constructor(options: CLIOptions) {
     this.options = options;
@@ -301,6 +303,12 @@ export class CCSimulatorServer {
     // Stop state persistence
     this.stopStatePersistence();
 
+    // Stop connection blocking interval if active
+    if (this.connectionBlockingIntervalId) {
+      clearInterval(this.connectionBlockingIntervalId);
+      this.connectionBlockingIntervalId = null;
+    }
+
     // Stop dashboard
     if (this.dashboard) {
       await this.dashboard.stop();
@@ -475,5 +483,50 @@ export class CCSimulatorServer {
       channelCount,
       clients,
     };
+  }
+
+  /**
+   * Enable or disable connection blocking mode
+   * When enabled, all existing clients are disconnected and new connections are rejected
+   * @param enabled - true to block connections, false to allow
+   * @returns Number of clients disconnected (if enabling)
+   */
+  setConnectionBlocking(enabled: boolean): number {
+    const wasEnabled = this.connectionBlockingEnabled;
+    this.connectionBlockingEnabled = enabled;
+
+    let disconnectedCount = 0;
+
+    // If enabling blocking, disconnect all existing clients and start blocking interval
+    if (enabled && !wasEnabled) {
+      disconnectedCount = this.disconnectAllClients();
+      console.log(`Connection blocking enabled, disconnected ${disconnectedCount} client(s)`);
+
+      // Start interval to continuously disconnect any new connections
+      this.connectionBlockingIntervalId = setInterval(() => {
+        if (this.connectionBlockingEnabled && this.getConnectedClientCount() > 0) {
+          const count = this.disconnectAllClients();
+          if (count > 0) {
+            console.log(`Blocked ${count} new connection(s)`);
+          }
+        }
+      }, 500); // Check every 500ms
+    } else if (!enabled && wasEnabled) {
+      // Stop the blocking interval
+      if (this.connectionBlockingIntervalId) {
+        clearInterval(this.connectionBlockingIntervalId);
+        this.connectionBlockingIntervalId = null;
+      }
+      console.log('Connection blocking disabled, new connections allowed');
+    }
+
+    return disconnectedCount;
+  }
+
+  /**
+   * Check if connection blocking is enabled
+   */
+  isConnectionBlocked(): boolean {
+    return this.connectionBlockingEnabled;
   }
 }
