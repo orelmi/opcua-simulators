@@ -45,6 +45,7 @@ export interface DashboardOptions {
   stateMachine: StationStateMachine;
   opcuaServer?: OpcuaClientsAccessor;
   store?: PersistenceStore;
+  nodesetMode?: boolean;
 }
 
 interface DashboardState {
@@ -90,6 +91,7 @@ interface DashboardState {
     clients: OpcuaClientInfo[];
   };
   connectionBlocked: boolean;
+  nodesetMode: boolean;
 }
 
 export class DashboardServer {
@@ -176,6 +178,7 @@ export class DashboardServer {
       uptime: process.uptime(),
       opcuaClients,
       connectionBlocked,
+      nodesetMode: !!this.options.nodesetMode,
     };
   }
 
@@ -1182,14 +1185,14 @@ export class DashboardServer {
 <body>
   <div class="container">
     <header>
-      <h1><span class="ws-status ws-disconnected" id="wsStatus"></span>OPC UA SPC Simulator</h1>
+      <h1><span class="ws-status ws-disconnected" id="wsStatus"></span><span id="dashTitle">OPC UA SPC Simulator</span></h1>
       <span class="uptime" id="uptime">Uptime: --</span>
     </header>
 
     <div class="grid">
       <!-- Left sidebar: Station controls -->
       <div class="sidebar">
-        <div class="panel">
+        <div class="panel" id="panelStation">
           <h2>Station State</h2>
           <div class="info-row">
             <span class="info-label">Status</span>
@@ -1251,7 +1254,7 @@ export class DashboardServer {
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel" id="panelSpcEmission">
           <h2>SPC Emission Control</h2>
           <div class="info-row">
             <span class="info-label">Force SPC Emission</span>
@@ -1316,7 +1319,7 @@ export class DashboardServer {
           <button onclick="resetScenarioTime()" style="width:100%; margin-top:10px; background:#555;">Reset Timer</button>
         </div>
 
-        <div class="panel">
+        <div class="panel" id="panelSpcEvents">
           <h2>SPC Events</h2>
           <div class="quick-actions">
             <h3>Outliers</h3>
@@ -1680,17 +1683,31 @@ export class DashboardServer {
       document.getElementById('chartAvg').textContent = formatNumber(avg);
     }
 
+    let nodesetModeInitialized = false;
+
     function updateUI(data) {
       state = data;
 
-      // Update status
-      const statusBadge = document.getElementById('statusBadge');
-      statusBadge.textContent = data.stationState.statusName;
-      statusBadge.className = 'status-badge status-' + data.stationState.status;
+      // Handle NodeSet mode: hide irrelevant panels
+      if (data.nodesetMode && !nodesetModeInitialized) {
+        nodesetModeInitialized = true;
+        document.getElementById('dashTitle').textContent = 'OPC UA NodeSet Simulator (EngValue)';
+        const hide = id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; };
+        hide('panelStation');
+        hide('panelSpcEmission');
+        hide('panelSpcEvents');
+      }
 
-      // Update times
-      document.getElementById('startedAt').textContent = formatTime(data.stationState.startedAt);
-      document.getElementById('stoppedAt').textContent = formatTime(data.stationState.stoppedAt);
+      // Update status (skip in NodeSet mode since panel is hidden)
+      if (!data.nodesetMode) {
+        const statusBadge = document.getElementById('statusBadge');
+        statusBadge.textContent = data.stationState.statusName;
+        statusBadge.className = 'status-badge status-' + data.stationState.status;
+
+        // Update times
+        document.getElementById('startedAt').textContent = formatTime(data.stationState.startedAt);
+        document.getElementById('stoppedAt').textContent = formatTime(data.stationState.stoppedAt);
+      }
       document.getElementById('uptime').textContent = 'Uptime: ' + formatUptime(data.uptime);
 
       // Update scenario
@@ -1712,12 +1729,14 @@ export class DashboardServer {
       }
       select.value = data.scenario.name;
 
-      // Update command buttons
-      const status = data.stationState.status;
-      document.getElementById('btnConfigure').disabled = status !== 0;
-      document.getElementById('btnStart').disabled = status !== 1 && status !== 3;
-      document.getElementById('btnStop').disabled = status !== 2;
-      document.getElementById('btnReset').disabled = status !== 3;
+      // Update command buttons (skip in NodeSet mode)
+      if (!data.nodesetMode) {
+        const status = data.stationState.status;
+        document.getElementById('btnConfigure').disabled = status !== 0;
+        document.getElementById('btnStart').disabled = status !== 1 && status !== 3;
+        document.getElementById('btnStop').disabled = status !== 2;
+        document.getElementById('btnReset').disabled = status !== 3;
+      }
 
       // Update frequency sliders (skip if user is dragging)
       if (data.frequencies) {
@@ -1778,6 +1797,42 @@ export class DashboardServer {
         // Full initial render (first load or parameter count change)
         grid.innerHTML = data.parameters.map(p => {
           const limitsJson = JSON.stringify({ usl: p.usl, lsl: p.lsl, ucl: p.ucl, lcl: p.lcl, target: p.target }).replace(/"/g, '&quot;');
+
+          // NodeSet mode: simplified card with only EngValue
+          if (data.nodesetMode) {
+            return \`
+            <div class="param-card" id="pcard-\${p.index}">
+              <div class="param-header">
+                <span class="param-name">\${p.name}</span>
+                <span class="param-index">#\${p.index}</span>
+              </div>
+              <div class="param-values" style="grid-template-columns: 1fr;">
+                <div class="param-value" onclick="openChartModal(\${p.index}, '\${p.name}', 'eng', '\${p.unit}', \${limitsJson})" title="Click to view chart">
+                  <div class="param-value-label">EngValue</div>
+                  <div class="param-value-number" id="pev-\${p.index}">\${formatNumber(p.engValue)}<span class="param-unit">\${p.unit}</span></div>
+                </div>
+              </div>
+              <div class="param-sparklines" style="grid-template-columns: 1fr;">
+                <div class="sparkline-container" onclick="openChartModal(\${p.index}, '\${p.name}', 'eng', '\${p.unit}', \${limitsJson})" title="Click to view chart">
+                  <div class="sparkline-label">EngValue</div>
+                  <svg class="sparkline sparkline-eng" viewBox="0 0 100 30" preserveAspectRatio="none">
+                    <path id="pes-\${p.index}" d="\${renderSparkline(p.index, 'eng')}"/>
+                  </svg>
+                </div>
+              </div>
+              <div id="pfi-\${p.index}" style="text-align: center; margin-top: 8px; color: #666; font-size: 0.8rem;">
+                Target: \${formatNumber(p.target)} \${p.unit}
+              </div>
+              <div class="param-limits">
+                <div class="param-limit tolerance"><span>LSL</span><span class="param-limit-value">\${formatNumber(p.lsl)}</span></div>
+                <div class="param-limit tolerance"><span>USL</span><span class="param-limit-value">\${formatNumber(p.usl)}</span></div>
+                <div class="param-limit control"><span>LCL</span><span class="param-limit-value">\${formatNumber(p.lcl)}</span></div>
+                <div class="param-limit control"><span>UCL</span><span class="param-limit-value">\${formatNumber(p.ucl)}</span></div>
+              </div>
+            </div>
+            \`;
+          }
+
           return \`
           <div class="param-card \${p.enabled ? '' : 'disabled'}" id="pcard-\${p.index}">
             <div class="param-header">
@@ -1839,14 +1894,20 @@ export class DashboardServer {
         data.parameters.forEach(p => {
           const card = document.getElementById(\`pcard-\${p.index}\`);
           if (card) card.className = \`param-card \${p.enabled ? '' : 'disabled'}\`;
-          const sv = document.getElementById(\`psv-\${p.index}\`);
-          if (sv) sv.innerHTML = \`\${formatNumber(p.sampleValue)}<span class="param-unit">\${p.unit}</span>\`;
+          if (!data.nodesetMode) {
+            const sv = document.getElementById(\`psv-\${p.index}\`);
+            if (sv) sv.innerHTML = \`\${formatNumber(p.sampleValue)}<span class="param-unit">\${p.unit}</span>\`;
+          }
           const ev = document.getElementById(\`pev-\${p.index}\`);
           if (ev) ev.innerHTML = \`\${formatNumber(p.engValue)}<span class="param-unit">\${p.unit}</span>\`;
           const fi = document.getElementById(\`pfi-\${p.index}\`);
-          if (fi) fi.textContent = \`Sample #\${p.sampleIndex} | Target: \${formatNumber(p.target)}\`;
-          const ss = document.getElementById(\`pss-\${p.index}\`);
-          if (ss) ss.setAttribute('d', renderSparkline(p.index, 'sample'));
+          if (fi) fi.textContent = data.nodesetMode
+            ? \`Target: \${formatNumber(p.target)} \${p.unit}\`
+            : \`Sample #\${p.sampleIndex} | Target: \${formatNumber(p.target)}\`;
+          if (!data.nodesetMode) {
+            const ss = document.getElementById(\`pss-\${p.index}\`);
+            if (ss) ss.setAttribute('d', renderSparkline(p.index, 'sample'));
+          }
           const es = document.getElementById(\`pes-\${p.index}\`);
           if (es) es.setAttribute('d', renderSparkline(p.index, 'eng'));
         });

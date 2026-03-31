@@ -180,6 +180,8 @@ export interface CLIOptions {
   dashboardPort: number;
   /** Path to parameters configuration file (JSON) */
   configFile?: string;
+  /** Path to NodeSet XML file for EngValue-only simulation mode */
+  nodesetFile?: string;
 }
 
 export enum AcquisitionStatus {

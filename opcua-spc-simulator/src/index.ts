@@ -66,6 +66,7 @@ program
   .option('--node-id-format <format>', 'NodeId format: "string" (ns=X;s=Path) or "numeric" (ns=X;i=NNN)', 'string')
   .option('-w, --dashboard-port <port>', 'Web dashboard port (0 to disable)', '3000')
   .option('-c, --config <path>', 'Path to parameters configuration file (JSON)')
+  .option('--nodeset <path>', 'Path to NodeSet XML file for EngValue-only simulation (no station/SPC model)')
   .action(async (options) => {
     // Handle list scenarios
     if (options.listScenarios) {
@@ -99,11 +100,18 @@ program
       nodeIdFormat,
       dashboardPort: parseInt(options.dashboardPort, 10),
       configFile: options.config,
+      nodesetFile: options.nodeset,
     };
 
-    // Validate parameter count
-    if (cliOptions.parameterCount < 1 || cliOptions.parameterCount > 24) {
+    // Validate parameter count (only relevant in normal mode)
+    if (!cliOptions.nodesetFile && (cliOptions.parameterCount < 1 || cliOptions.parameterCount > 24)) {
       console.error('Error: Parameter count must be between 1 and 24');
+      process.exit(1);
+    }
+
+    // Validate NodeSet file exists
+    if (cliOptions.nodesetFile && !fs.existsSync(cliOptions.nodesetFile)) {
+      console.error(`Error: NodeSet file not found: ${cliOptions.nodesetFile}`);
       process.exit(1);
     }
 

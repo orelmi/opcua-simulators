@@ -12,11 +12,13 @@ import {
   OPCUACertificateManager,
 } from 'node-opcua';
 import { AddressSpaceBuilder } from './address-space-builder';
+import { NodeSetAddressSpaceBuilder } from './nodeset-address-space-builder';
 import { SQLiteHistoryStore } from '../database/sqlite-store';
 import { ParameterSimulator, createDefaultParameters } from '../simulation/parameter-simulator';
 import { StationStateMachine } from '../simulation/station-state-machine';
 import { DashboardServer } from '../dashboard/dashboard-server';
 import { CLIOptions, ParameterConfig, ParametersConfigFile, AcquisitionStatus } from '../types';
+import { parseNodeSetXml, NodeSetParseResult } from '../nodeset/nodeset-parser';
 import path from 'path';
 import fs from 'fs';
 
@@ -53,24 +55,81 @@ export class CCSimulatorServer {
   private addressSpaceBuilder: AddressSpaceBuilder | null = null;
   private connectionBlockingEnabled: boolean = false;
   private connectionBlockingIntervalId: NodeJS.Timeout | null = null;
+  private nodesetMode: boolean = false;
+  private nodesetParseResult: NodeSetParseResult | null = null;
 
   constructor(options: CLIOptions) {
     this.options = options;
+    this.nodesetMode = !!options.nodesetFile;
 
     // Initialize SQLite store
     this.historyStore = new SQLiteHistoryStore(options.dbPath);
 
-    // Load config file if specified
-    const configOverrides = options.configFile
-      ? loadConfigFile(options.configFile)
-      : undefined;
+    if (this.nodesetMode) {
+      // ===================== NodeSet mode =====================
+      // Parse the NodeSet XML to extract parameters
+      this.nodesetParseResult = parseNodeSetXml(options.nodesetFile!);
+      console.log(`[NodeSet] Parsed ${this.nodesetParseResult.parameters.length} parameters from ${options.nodesetFile}`);
 
-    // Create parameter configurations using new format
-    this.parameterConfigs = createDefaultParameters(
-      options.parameterCount,
-      options.sampleRate,
-      configOverrides
-    );
+      // Create generic ParameterConfigs from NodeSet parameters
+      this.parameterConfigs = this.nodesetParseResult.parameters.map(p => {
+        const target = options.target;
+        const uslPercent = options.uslOffset;
+        const lslPercent = options.lslOffset;
+        const usl = target * (1 + uslPercent / 100);
+        const lsl = target * (1 - lslPercent / 100);
+        const toleranceRange = usl - lsl;
+        const ucl = target + toleranceRange * 0.75 / 2;
+        const lcl = target - toleranceRange * 0.75 / 2;
+
+        return {
+          index: p.index,
+          name: p.browseName,
+          displayName: p.displayName,
+          description: `NodeSet parameter ${p.browseName}`,
+          toleranceLimits: { usl, lsl, target },
+          controlLimits: { ucl, lcl, cl: target },
+          unit: '°C', // Default unit for thermal parameters
+          sampleRate: options.sampleRate,
+          enabled: true,
+        };
+      });
+
+      // Apply config file overrides if provided
+      if (options.configFile) {
+        const configOverrides = loadConfigFile(options.configFile);
+        if (configOverrides?.parameters) {
+          for (const override of configOverrides.parameters) {
+            const config = this.parameterConfigs.find(c => c.index === override.index);
+            if (config) {
+              if (override.displayName !== undefined) config.displayName = override.displayName;
+              if (override.description !== undefined) config.description = override.description;
+              if (override.unit !== undefined) config.unit = override.unit;
+              if (override.target !== undefined) config.toleranceLimits.target = override.target;
+              if (override.usl !== undefined) config.toleranceLimits.usl = override.usl;
+              if (override.lsl !== undefined) config.toleranceLimits.lsl = override.lsl;
+              if (override.ucl !== undefined) config.controlLimits.ucl = override.ucl;
+              if (override.lcl !== undefined) config.controlLimits.lcl = override.lcl;
+              if (override.cl !== undefined) config.controlLimits.cl = override.cl;
+              if (override.enabled !== undefined) config.enabled = override.enabled;
+            }
+          }
+        }
+      }
+    } else {
+      // ===================== Normal mode =====================
+      // Load config file if specified
+      const configOverrides = options.configFile
+        ? loadConfigFile(options.configFile)
+        : undefined;
+
+      // Create parameter configurations using new format
+      this.parameterConfigs = createDefaultParameters(
+        options.parameterCount,
+        options.sampleRate,
+        configOverrides
+      );
+    }
 
     // Save configs to database
     for (const config of this.parameterConfigs) {
@@ -133,6 +192,13 @@ export class CCSimulatorServer {
 
     // Connect state machine to simulator so SampleValue updates only during acquisition
     this.simulator.setStateMachine(this.stateMachine);
+  }
+
+  /**
+   * Check if running in NodeSet mode
+   */
+  isNodeSetMode(): boolean {
+    return this.nodesetMode;
   }
 
   private getStatusName(status: AcquisitionStatus): string {
@@ -244,14 +310,22 @@ export class CCSimulatorServer {
 
     // Build address space
     const addressSpace = this.server.engine.addressSpace!;
-    this.addressSpaceBuilder = new AddressSpaceBuilder(
-      addressSpace,
-      this.historyStore,
-      this.simulator,
-      this.stateMachine,
-      this.options
-    );
-    this.addressSpaceBuilder.build(this.parameterConfigs);
+
+    if (this.nodesetMode && this.nodesetParseResult) {
+      // NodeSet mode: simplified address space with only EngValue per parameter
+      const nodesetBuilder = new NodeSetAddressSpaceBuilder(addressSpace, this.simulator);
+      nodesetBuilder.build(this.nodesetParseResult, this.parameterConfigs);
+    } else {
+      // Normal mode: full CC address space with station, SPC, etc.
+      this.addressSpaceBuilder = new AddressSpaceBuilder(
+        addressSpace,
+        this.historyStore,
+        this.simulator,
+        this.stateMachine,
+        this.options
+      );
+      this.addressSpaceBuilder.build(this.parameterConfigs);
+    }
 
     // Start server
     await this.server.start();
@@ -270,19 +344,30 @@ export class CCSimulatorServer {
         stateMachine: this.stateMachine,
         opcuaServer: this,
         store: this.historyStore,
+        nodesetMode: this.nodesetMode,
       });
       await this.dashboard.start();
     }
 
     const endpointUrl = this.server.getEndpointUrl();
     console.log('='.repeat(60));
-    console.log('OPC UA CC Simulator Server started');
+    if (this.nodesetMode) {
+      console.log('OPC UA CC Simulator Server started (NodeSet mode - EngValue only)');
+    } else {
+      console.log('OPC UA CC Simulator Server started');
+    }
     console.log('='.repeat(60));
     console.log(`Endpoint URL: ${endpointUrl}`);
-    console.log(`Parameters: P01 to P${this.options.parameterCount.toString().padStart(2, '0')}`);
+    if (this.nodesetMode && this.nodesetParseResult) {
+      console.log(`NodeSet file: ${this.options.nodesetFile}`);
+      console.log(`Parameters: ${this.nodesetParseResult.parameters.map(p => p.browseName).join(', ')}`);
+      console.log(`Mode: EngValue simulation only (no station, no SPC)`);
+    } else {
+      console.log(`Parameters: P01 to P${this.options.parameterCount.toString().padStart(2, '0')}`);
+      console.log(`SPC sample frequency: ${this.options.spcFrequency}ms (SampleValue/SampleIndex)`);
+    }
     console.log(`Scenario: ${this.options.scenario}`);
     console.log(`Internal tick rate: ${this.options.sampleRate}ms`);
-    console.log(`SPC sample frequency: ${this.options.spcFrequency}ms (SampleValue/SampleIndex)`);
     console.log(`EngValue frequency: ${this.options.engFrequency}ms`);
     if (this.options.configFile) {
       console.log(`Config file: ${this.options.configFile}`);
