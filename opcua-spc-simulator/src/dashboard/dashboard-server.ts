@@ -11,6 +11,7 @@ import { ParameterSimulator, ParameterState } from '../simulation/parameter-simu
 import { StationStateMachine } from '../simulation/station-state-machine';
 import { listScenarios } from '../simulation/scenarios';
 import { AcquisitionStatus, ScenarioParamDef, ScenarioParams } from '../types';
+import { NON_GOOD_QUALITY_KEYS, isValidQualityKey } from '../opcua/quality-codes';
 
 export interface OpcuaClientInfo {
   sessionName: string;
@@ -37,6 +38,7 @@ export interface OpcuaClientsAccessor {
 
 export interface PersistenceStore {
   clearPersistedState(): void;
+  clearHistory(): number;
 }
 
 export interface DashboardOptions {
@@ -75,6 +77,7 @@ interface DashboardState {
     sampleValue: number;
     engValue: number;
     sampleValueOverride: number | null;
+    qualityOverride: string | null;
     sampleIndex: number;
     unit: string;
     target: number;
@@ -92,6 +95,7 @@ interface DashboardState {
   };
   connectionBlocked: boolean;
   nodesetMode: boolean;
+  qualityOptions: string[];
 }
 
 export class DashboardServer {
@@ -137,6 +141,7 @@ export class DashboardServer {
       sampleValue: pState.sampleValue,
       engValue: pState.engValue,
       sampleValueOverride: this.options.simulator.getSampleValueOverride(index),
+      qualityOverride: this.options.simulator.getQualityOverride(index),
       sampleIndex: pState.sampleIndex,
       unit: pState.config.unit,
       target: pState.config.toleranceLimits.target,
@@ -179,6 +184,7 @@ export class DashboardServer {
       opcuaClients,
       connectionBlocked,
       nodesetMode: !!this.options.nodesetMode,
+      qualityOptions: NON_GOOD_QUALITY_KEYS,
     };
   }
 
@@ -311,6 +317,26 @@ export class DashboardServer {
       }
     });
 
+    // API: Force OPC UA quality per parameter (null = Good)
+    this.app.post('/api/quality-override', (req: Request, res: Response) => {
+      const { parameterIndex, quality } = req.body;
+
+      if (typeof parameterIndex !== 'number') {
+        return res.status(400).json({ error: 'parameterIndex must be a number' });
+      }
+      if (quality !== null && (typeof quality !== 'string' || !isValidQualityKey(quality))) {
+        return res.status(400).json({ error: 'quality must be a valid quality key or null' });
+      }
+
+      try {
+        this.options.simulator.setQualityOverride(parameterIndex, quality);
+        this.broadcastState();
+        res.json({ success: true, parameterIndex, qualityOverride: this.options.simulator.getQualityOverride(parameterIndex) });
+      } catch (error) {
+        res.status(500).json({ error: `Failed to set quality override: ${error}` });
+      }
+    });
+
     // API: Set force SPC emission
     this.app.post('/api/force-spc-emission', (req: Request, res: Response) => {
       const { forceSpcEmission } = req.body;
@@ -440,6 +466,19 @@ export class DashboardServer {
         res.json({ success: true, message: 'Persistence cleared. Restart server to start fresh.' });
       } catch (error) {
         res.status(500).json({ error: `Failed to reset persistence: ${error}` });
+      }
+    });
+
+    // API: Purge the history table (avoids a large backlog overwhelming HDA clients)
+    this.app.post('/api/purge-history', (_req: Request, res: Response) => {
+      if (!this.options.store) {
+        return res.status(400).json({ error: 'Persistence store not available' });
+      }
+      try {
+        const deleted = this.options.store.clearHistory();
+        res.json({ success: true, deleted });
+      } catch (error) {
+        res.status(500).json({ error: `Failed to purge history: ${error}` });
       }
     });
 
@@ -1361,6 +1400,15 @@ export class DashboardServer {
             <span>samples</span>
           </div>
         </div>
+
+        <div class="panel" id="panelDatabase">
+          <h2>Base de données</h2>
+          <button class="action-btn reset-btn" style="width:100%;" onclick="purgeHistory()">Purger l'historique</button>
+          <p style="font-size:11px; color:#888; margin-top:8px; line-height:1.4;">
+            Vide la table d'historique (SampleValue/SampleIndex). Évite qu'un gros backlog sature
+            les lectures OPC UA (HistoryRead). Irréversible.
+          </p>
+        </div>
       </div>
     </div>
   </div>
@@ -1478,6 +1526,30 @@ export class DashboardServer {
       const values = type === 'sample' ? data.sample : data.eng;
       const path = generateSparklinePath(values, 100, 30);
       return path;
+    }
+
+    // Render the "Force Quality" control (checkbox + quality selector) for a parameter card
+    function qualityControlHtml(p, qualityOptions) {
+      const forced = p.qualityOverride !== null;
+      const opts = (qualityOptions || []).map(q => {
+        const selected = (p.qualityOverride === q || (p.qualityOverride === null && q === 'Bad')) ? 'selected' : '';
+        return \`<option value="\${q}" \${selected}>\${q}</option>\`;
+      }).join('');
+      return \`
+        <div style="margin-top: 8px; display: flex; align-items: center; gap: 6px;">
+          <label style="color: #888; font-size: 0.78rem; display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap;">
+            <input type="checkbox" id="pqc-\${p.index}" \${forced ? 'checked' : ''}
+              onchange="toggleQualityOverride(\${p.index}, this.checked)"
+              style="cursor: pointer; width: 13px; height: 13px;">
+            Force Quality
+          </label>
+          <select id="pqs-\${p.index}" \${forced ? '' : 'disabled'}
+            onchange="setQualityOverride(\${p.index}, this.value)"
+            style="flex: 1; min-width: 0; padding: 3px 6px; border-radius: 4px; border: 1px solid \${forced ? '#e74c3c' : '#333'}; background: #0f0f23; color: \${forced ? '#eee' : '#666'}; font-size: 0.78rem;">
+            \${opts}
+          </select>
+        </div>
+      \`;
     }
 
     function openChartModal(paramIndex, paramName, valueType, unit, limits) {
@@ -1829,6 +1901,7 @@ export class DashboardServer {
                 <div class="param-limit control"><span>LCL</span><span class="param-limit-value">\${formatNumber(p.lcl)}</span></div>
                 <div class="param-limit control"><span>UCL</span><span class="param-limit-value">\${formatNumber(p.ucl)}</span></div>
               </div>
+              \${qualityControlHtml(p, data.qualityOptions)}
             </div>
             \`;
           }
@@ -1886,6 +1959,7 @@ export class DashboardServer {
                 style="flex: 1; min-width: 0; padding: 3px 6px; border-radius: 4px; border: 1px solid \${p.sampleValueOverride !== null ? '#4ecca3' : '#333'}; background: #0f0f23; color: \${p.sampleValueOverride !== null ? '#eee' : '#666'}; font-size: 0.78rem;"
                 onchange="setSampleValueOverride(\${p.index}, this.value)">
             </div>
+            \${qualityControlHtml(p, data.qualityOptions)}
           </div>
           \`;
         }).join('');
@@ -1964,6 +2038,21 @@ export class DashboardServer {
         }
       } catch (error) {
         alert('Error: ' + error.message);
+      }
+    }
+
+    async function purgeHistory() {
+      if (!confirm("Purger tout l'historique de la base ? Action irréversible.")) return;
+      try {
+        const res = await fetch('/api/purge-history', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          alert('Historique purgé : ' + data.deleted.toLocaleString() + ' ligne(s) supprimée(s).');
+        } else {
+          alert('Échec de la purge : ' + data.error);
+        }
+      } catch (error) {
+        alert('Erreur : ' + error.message);
       }
     }
 
@@ -2211,6 +2300,42 @@ async function resetPersistence() {
         const data = await res.json();
         if (!data.success) {
           alert('Failed to set SampleValue override: ' + data.error);
+        }
+      } catch (error) {
+        alert('Error: ' + error.message);
+      }
+    }
+
+    function toggleQualityOverride(paramIndex, force) {
+      const sel = document.getElementById(\`pqs-\${paramIndex}\`);
+      if (force) {
+        if (sel) {
+          if (!sel.value) sel.value = 'Bad';
+          sel.disabled = false;
+          sel.style.borderColor = '#e74c3c';
+          sel.style.color = '#eee';
+        }
+        setQualityOverride(paramIndex, sel ? sel.value : 'Bad');
+      } else {
+        if (sel) {
+          sel.disabled = true;
+          sel.style.borderColor = '#333';
+          sel.style.color = '#666';
+        }
+        setQualityOverride(paramIndex, null);
+      }
+    }
+
+    async function setQualityOverride(paramIndex, quality) {
+      try {
+        const res = await fetch('/api/quality-override', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parameterIndex: paramIndex, quality: quality })
+        });
+        const data = await res.json();
+        if (!data.success) {
+          alert('Failed to set quality override: ' + data.error);
         }
       } catch (error) {
         alert('Error: ' + error.message);

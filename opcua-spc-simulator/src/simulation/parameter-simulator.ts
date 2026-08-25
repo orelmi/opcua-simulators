@@ -31,6 +31,8 @@ export class ParameterSimulator extends EventEmitter {
   private stateMachine: StationStateMachine | null = null;
   private forceSpcEmission: boolean = false;
   private sampleValueOverrides: Map<number, number> = new Map();
+  // Per-parameter forced OPC UA quality (StatusCode key). Absent = Good.
+  private qualityOverrides: Map<number, string> = new Map();
 
   /**
    * @param scenarioName - Name of the simulation scenario
@@ -390,6 +392,33 @@ export class ParameterSimulator extends EventEmitter {
   }
 
   /**
+   * Get the forced OPC UA quality key for a parameter, or null if quality is Good (default).
+   */
+  getQualityOverride(index: number): string | null {
+    return this.qualityOverrides.has(index) ? this.qualityOverrides.get(index)! : null;
+  }
+
+  getQualityOverrides(): Record<number, string> {
+    return Object.fromEntries(this.qualityOverrides);
+  }
+
+  /**
+   * Force the OPC UA quality (StatusCode) of a parameter's tags.
+   * @param index Parameter index
+   * @param quality Quality key (e.g. 'Bad', 'Uncertain'), or null to restore Good.
+   */
+  setQualityOverride(index: number, quality: string | null): void {
+    if (quality === null) {
+      this.qualityOverrides.delete(index);
+    } else {
+      this.qualityOverrides.set(index, quality);
+    }
+    console.log(`[Simulator] Quality override P${String(index).padStart(2,'0')}: ${quality !== null ? quality : 'Good'}`);
+    // Notify address-space builders so they re-apply the quality to current values immediately
+    this.emit('qualityOverrideChanged', { index, quality });
+  }
+
+  /**
    * Get scenario parameter definitions for current scenario
    */
   getScenarioParamDefs(): ScenarioParamDef[] {
@@ -565,12 +594,22 @@ export interface WeldingParameterDef {
 export const WELDING_PARAMETERS: WeldingParameterDef[] = [
   // Current and voltage parameters
   {
-    name: 'WeldCurrent', description: 'Courant de soudage', unit: 'A',
+    name: 'WeldCurrent 1', description: 'Courant de soudage 1', unit: 'A',
     target: 180, usl: 195, lsl: 165,  // ±8% tolerance
     ucl: 190, lcl: 170                 // ±5.5% control (tighter)
   },
   {
-    name: 'ArcVoltage', description: 'Tension d\'arc', unit: 'V',
+    name: 'WeldCurrent 2', description: 'Courant de soudage 2', unit: 'A',
+    target: 180, usl: 195, lsl: 165,  // ±8% tolerance
+    ucl: 190, lcl: 170                 // ±5.5% control (tighter)
+  },
+  {
+    name: 'ArcVoltage 1', description: 'Tension d\'arc 1', unit: 'V',
+    target: 24, usl: 26, lsl: 22,     // ±8% tolerance
+    ucl: 25.2, lcl: 22.8               // ±5% control
+  },
+  {
+    name: 'ArcVoltage 2', description: 'Tension d\'arc 2', unit: 'V',
     target: 24, usl: 26, lsl: 22,     // ±8% tolerance
     ucl: 25.2, lcl: 22.8               // ±5% control
   },
@@ -687,17 +726,6 @@ export const WELDING_PARAMETERS: WeldingParameterDef[] = [
     ucl: 140, lcl: 100                  // stable pulse range
   },
 
-  // Quality parameters
-  {
-    name: 'ArcStability', description: 'Stabilité d\'arc', unit: '%',
-    target: 95, usl: 100, lsl: 85,     // higher is better
-    ucl: 98, lcl: 92                    // good quality range
-  },
-  {
-    name: 'SpatterIndex', description: 'Index de projections', unit: '%',
-    target: 2.0, usl: 5.0, lsl: 0.0,   // lower is better
-    ucl: 3.5, lcl: 0.5                  // acceptable quality
-  },
 ];
 
 /**

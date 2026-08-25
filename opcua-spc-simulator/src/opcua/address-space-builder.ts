@@ -17,11 +17,13 @@ import {
   NumericRange,
   AccessLevelFlag,
   HistoryData,
+  coerceStatusCode,
 } from 'node-opcua';
 import { ParameterConfig, AcquisitionStatus, TriggerType, CLIOptions } from '../types';
 import { SQLiteHistoryStore } from '../database/sqlite-store';
 import { ParameterSimulator, ParameterState } from '../simulation/parameter-simulator';
 import { StationStateMachine } from '../simulation/station-state-machine';
+import { resolveStatusCode } from './quality-codes';
 
 const NAMESPACE_URI = 'http://opcua-simulators.local/UA/msp';
 
@@ -99,6 +101,7 @@ export class AddressSpaceBuilder {
   private numericIdCounter: number = 6000; // Start at 6000 for custom nodes
   private heartbeatSimulationEnabled: boolean = true;
   private storageFillOverride: number | null = null;
+  private metricsIntervalId: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     addressSpace: AddressSpace,
@@ -185,6 +188,11 @@ export class AddressSpaceBuilder {
 
     // Bind state machine to OPC UA nodes
     this.bindStateMachine();
+
+    // Re-apply quality to current values immediately when a forced quality toggles
+    this.simulator.on('qualityOverrideChanged', ({ index }: { index: number }) => {
+      this.reapplyQuality(index);
+    });
 
     console.log(`Address space built with ${parameterConfigs.length} parameters`);
   }
@@ -453,6 +461,88 @@ export class AddressSpaceBuilder {
       userAccessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
     });
 
+    // Config/RawRange (same as EngRange, required by WinCC OA)
+    const rawRange = this.namespace.addObject({
+      nodeId: this.generateNodeId(`${pName}.Config.RawRange`),
+      componentOf: configObject,
+      browseName: 'RawRange',
+      displayName: 'RawRange',
+    });
+
+    this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Config.RawRange.MinimumValue`),
+      componentOf: rawRange,
+      browseName: 'MinimumValue',
+      displayName: 'MinimumValue',
+      dataType: DataType.Double,
+      value: { dataType: DataType.Double, value: config.toleranceLimits.lsl },
+    });
+
+    this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Config.RawRange.MaximumValue`),
+      componentOf: rawRange,
+      browseName: 'MaximumValue',
+      displayName: 'MaximumValue',
+      dataType: DataType.Double,
+      value: { dataType: DataType.Double, value: config.toleranceLimits.usl },
+    });
+
+    // Buffer sub-object (required by WinCC OA for buffered data transfer)
+    const bufferObject = this.namespace.addObject({
+      nodeId: this.generateNodeId(`${pName}.Buffer`),
+      componentOf: paramObject,
+      browseName: 'Buffer',
+      displayName: 'Buffer',
+    });
+
+    this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Buffer.LenAck`),
+      componentOf: bufferObject,
+      browseName: 'LenAck',
+      displayName: 'LenAck',
+      dataType: DataType.UInt32,
+      value: { dataType: DataType.UInt32, value: 0 },
+      accessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+      userAccessLevel: AccessLevelFlag.CurrentRead | AccessLevelFlag.CurrentWrite,
+    });
+
+    this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Buffer.LenWritten`),
+      componentOf: bufferObject,
+      browseName: 'LenWritten',
+      displayName: 'LenWritten',
+      dataType: DataType.UInt32,
+      value: { dataType: DataType.UInt32, value: 0 },
+      accessLevel: AccessLevelFlag.CurrentRead,
+      userAccessLevel: AccessLevelFlag.CurrentRead,
+    });
+
+    this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Buffer.SampleIndexBuffer`),
+      componentOf: bufferObject,
+      browseName: 'SampleIndexBuffer',
+      displayName: 'SampleIndexBuffer',
+      dataType: DataType.UInt32,
+      arrayDimensions: [100],
+      valueRank: 1,
+      value: { dataType: DataType.UInt32, arrayType: VariantArrayType.Array, value: new Uint32Array(100) },
+      accessLevel: AccessLevelFlag.CurrentRead,
+      userAccessLevel: AccessLevelFlag.CurrentRead,
+    });
+
+    this.namespace.addVariable({
+      nodeId: this.generateNodeId(`${pName}.Buffer.SampleValueBuffer`),
+      componentOf: bufferObject,
+      browseName: 'SampleValueBuffer',
+      displayName: 'SampleValueBuffer',
+      dataType: DataType.Double,
+      arrayDimensions: [100],
+      valueRank: 1,
+      value: { dataType: DataType.Double, arrayType: VariantArrayType.Array, value: new Float64Array(100) },
+      accessLevel: AccessLevelFlag.CurrentRead,
+      userAccessLevel: AccessLevelFlag.CurrentRead,
+    });
+
     // Store parameter reference
     this.parameters.set(config.index, {
       object: paramObject,
@@ -518,7 +608,8 @@ export class AddressSpaceBuilder {
           value: new Variant({ dataType: DataType.Double, value: point.value }),
           sourceTimestamp: point.timestamp,
           serverTimestamp: point.timestamp,
-          statusCode: StatusCodes.Good,
+          // Restore the per-sample quality that was historized (Good unless forced otherwise)
+          statusCode: coerceStatusCode(point.statusCode ?? 0),
         }));
 
         const historyData = new HistoryData({ dataValues });
@@ -546,6 +637,7 @@ export class AddressSpaceBuilder {
     engValue: UAVariable
   ): void {
     // Listen for EngValue updates (high frequency, default 100ms)
+    // EngValue is the real-time signal and always keeps Good quality.
     this.simulator.on(`engValue:${parameterIndex}`, (data: { timestamp: Date; engValue: number }) => {
       engValue.setValueFromSource(
         new Variant({ dataType: DataType.Double, value: data.engValue }),
@@ -556,23 +648,47 @@ export class AddressSpaceBuilder {
 
     // Listen for SPC sample updates (lower frequency, default 5s)
     this.simulator.on(`parameter:${parameterIndex}`, (dataPoint) => {
-      // Update SampleValue
+      // The forced quality (if any) applies to SampleValue only.
+      const statusCode = resolveStatusCode(this.simulator.getQualityOverride(parameterIndex));
+
+      // Update SampleValue (carries the forced quality)
       sampleValue.setValueFromSource(
         new Variant({ dataType: DataType.Double, value: dataPoint.value }),
-        StatusCodes.Good,
+        statusCode,
         dataPoint.timestamp
       );
 
-      // Update SampleIndex
+      // Update SampleIndex (always Good)
       sampleIndex.setValueFromSource(
         new Variant({ dataType: DataType.UInt32, value: dataPoint.sampleIndex % 0xFFFFFFFF }),
         StatusCodes.Good,
         dataPoint.timestamp
       );
 
-      // Store in history (only SPC samples are historized)
-      this.historyStore.insertDataPoint(dataPoint);
+      // Store in history (only SPC samples are historized), keeping the forced quality
+      // so a later HistoryRead returns the same StatusCode as the live value.
+      this.historyStore.insertDataPoint({ ...dataPoint, statusCode: statusCode.value });
     });
+  }
+
+  /**
+   * Re-apply the current SampleValue with the (possibly changed) forced quality.
+   * Called when the quality override toggles so clients see the new StatusCode immediately,
+   * without waiting for the next SPC emission (up to 5s). Only SampleValue carries the
+   * forced quality; EngValue and SampleIndex always stay Good.
+   */
+  private reapplyQuality(parameterIndex: number): void {
+    const param = this.parameters.get(parameterIndex);
+    const state = this.simulator.getParameterState(parameterIndex);
+    if (!param || !state) return;
+
+    const statusCode = resolveStatusCode(this.simulator.getQualityOverride(parameterIndex));
+
+    param.sampleValue.setValueFromSource(
+      new Variant({ dataType: DataType.Double, value: state.sampleValue }),
+      statusCode,
+      new Date()
+    );
   }
 
 
@@ -696,6 +812,9 @@ export class AddressSpaceBuilder {
       displayName: 'Value',
       dataType: DataType.UInt16,
       value: { dataType: DataType.UInt16, value: this.stateMachine.getStatus() },
+      accessLevel: AccessLevelFlag.CurrentRead,
+      userAccessLevel: AccessLevelFlag.CurrentRead,
+      minimumSamplingInterval: 0, // 0 = server decides, ensures subscription notifications
     });
 
     // State/StartedAt (DateTime)
@@ -706,6 +825,9 @@ export class AddressSpaceBuilder {
       displayName: 'StartedAt',
       dataType: DataType.DateTime,
       value: { dataType: DataType.DateTime, value: null },
+      accessLevel: AccessLevelFlag.CurrentRead,
+      userAccessLevel: AccessLevelFlag.CurrentRead,
+      minimumSamplingInterval: 0,
     });
 
     // State/StoppedAt (DateTime)
@@ -716,6 +838,9 @@ export class AddressSpaceBuilder {
       displayName: 'StoppedAt',
       dataType: DataType.DateTime,
       value: { dataType: DataType.DateTime, value: null },
+      accessLevel: AccessLevelFlag.CurrentRead,
+      userAccessLevel: AccessLevelFlag.CurrentRead,
+      minimumSamplingInterval: 0,
     });
 
     // Create Command sub-object with boolean commands
@@ -881,6 +1006,9 @@ export class AddressSpaceBuilder {
       displayName: 'CycleTime',
       dataType: DataType.UInt32,
       value: { dataType: DataType.UInt32, value: 5000 }, // 5 seconds initial
+      accessLevel: AccessLevelFlag.CurrentRead,
+      userAccessLevel: AccessLevelFlag.CurrentRead,
+      minimumSamplingInterval: 1000,
     });
 
     // Metrics/Info1 - random info value (simulated)
@@ -891,6 +1019,9 @@ export class AddressSpaceBuilder {
       displayName: 'Info1',
       dataType: DataType.Double,
       value: { dataType: DataType.Double, value: Math.random() * 100 },
+      accessLevel: AccessLevelFlag.CurrentRead,
+      userAccessLevel: AccessLevelFlag.CurrentRead,
+      minimumSamplingInterval: 1000,
     });
 
     // Metrics/Info2 - info value (no simulation, static)
@@ -921,6 +1052,9 @@ export class AddressSpaceBuilder {
       displayName: 'StorageFillPercentage',
       dataType: DataType.Double,
       value: { dataType: DataType.Double, value: 10.0 + Math.random() * 20 }, // 10-30% initial
+      accessLevel: AccessLevelFlag.CurrentRead,
+      userAccessLevel: AccessLevelFlag.CurrentRead,
+      minimumSamplingInterval: 1000,
     });
 
     // Metrics/UpTimeSeconds - uptime in seconds since startup
@@ -931,6 +1065,9 @@ export class AddressSpaceBuilder {
       displayName: 'UpTimeSeconds',
       dataType: DataType.UInt32,
       value: { dataType: DataType.UInt32, value: 0 },
+      accessLevel: AccessLevelFlag.CurrentRead,
+      userAccessLevel: AccessLevelFlag.CurrentRead,
+      minimumSamplingInterval: 1000,
     });
 
     // Create Context sub-object
@@ -969,6 +1106,36 @@ export class AddressSpaceBuilder {
       displayName: 'DoubleInfo3',
       dataType: DataType.Double,
       value: { dataType: DataType.Double, value: 0.0 },
+    });
+
+    // Context/StringInfo1 - no simulation
+    this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.StringInfo1'),
+      componentOf: contextObject,
+      browseName: 'StringInfo1',
+      displayName: 'StringInfo1',
+      dataType: DataType.String,
+      value: { dataType: DataType.String, value: '' },
+    });
+
+    // Context/StringInfo2 - no simulation
+    this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.StringInfo2'),
+      componentOf: contextObject,
+      browseName: 'StringInfo2',
+      displayName: 'StringInfo2',
+      dataType: DataType.String,
+      value: { dataType: DataType.String, value: '' },
+    });
+
+    // Context/StringInfo3 - no simulation
+    this.namespace.addVariable({
+      nodeId: this.generateNodeId('Station.Context.StringInfo3'),
+      componentOf: contextObject,
+      browseName: 'StringInfo3',
+      displayName: 'StringInfo3',
+      dataType: DataType.String,
+      value: { dataType: DataType.String, value: '' },
     });
 
     // Context/OperationId - writable by OPC UA client
@@ -1143,7 +1310,7 @@ export class AddressSpaceBuilder {
     let revolutionAngle = 0; // 0-360° perpetual revolution
 
     // Update metrics every second
-    setInterval(() => {
+    this.metricsIntervalId = setInterval(() => {
       const now = new Date();
 
       // Update UpTimeSeconds (seconds since startup)
@@ -1288,5 +1455,15 @@ export class AddressSpaceBuilder {
    */
   getStateMachine(): StationStateMachine {
     return this.stateMachine;
+  }
+
+  /**
+   * Stop all intervals (call before server shutdown)
+   */
+  dispose(): void {
+    if (this.metricsIntervalId) {
+      clearInterval(this.metricsIntervalId);
+      this.metricsIntervalId = null;
+    }
   }
 }

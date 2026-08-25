@@ -294,6 +294,7 @@ export class CCSimulatorServer {
         MessageSecurityMode.SignAndEncrypt,
       ],
       allowAnonymous: true,
+      maxConnectionsPerEndpoint: 20,
       serverCapabilities: new ServerCapabilities({
         maxBrowseContinuationPoints: 10,
         maxHistoryContinuationPoints: 10,
@@ -329,6 +330,24 @@ export class CCSimulatorServer {
 
     // Start server
     await this.server.start();
+
+    // Log OPC UA session/subscription activity for debugging
+    this.server.on('create_session', (session: { sessionName: string; clientDescription?: { applicationName?: { text?: string } } }) => {
+      const appName = session.clientDescription?.applicationName?.text || 'unknown';
+      console.log(`[OPC UA] New session: "${session.sessionName}" from ${appName}`);
+    });
+    this.server.on('session_closed', (session: { sessionName: string }, reason: string) => {
+      console.log(`[OPC UA] Session closed: "${session.sessionName}" reason: ${reason}`);
+    });
+
+    // Log all advertised endpoints
+    const endpoints = this.server.endpoints.map(ep => ep.endpointDescriptions()).flat();
+    console.log(`[OPC UA] Advertised endpoints:`);
+    for (const ep of endpoints) {
+      if (ep.securityPolicyUri?.includes('None')) {
+        console.log(`  ${ep.endpointUrl} (${ep.securityPolicyUri})`);
+      }
+    }
 
     // Start simulation
     this.simulator.start();
@@ -403,6 +422,11 @@ export class CCSimulatorServer {
 
     // Stop simulation
     this.simulator.stop();
+
+    // Stop metrics intervals before destroying address space
+    if (this.addressSpaceBuilder) {
+      this.addressSpaceBuilder.dispose();
+    }
 
     // Cleanup state machine
     this.stateMachine.destroy();

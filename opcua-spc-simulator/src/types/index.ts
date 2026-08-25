@@ -94,6 +94,8 @@ export interface HistoricalDataPoint {
   sampleIndex: number;
   /** Engineering value */
   engValue: number;
+  /** OPC UA StatusCode (numeric, unsigned 32-bit) of the sample. 0 = Good. */
+  statusCode?: number;
 }
 
 /**

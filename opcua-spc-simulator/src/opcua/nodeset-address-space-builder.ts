@@ -11,12 +11,12 @@ import {
   Namespace,
   UAVariable,
   Variant,
-  StatusCodes,
   AccessLevelFlag,
 } from 'node-opcua';
 import { NodeSetParseResult, NodeSetParameter } from '../nodeset/nodeset-parser';
 import { ParameterSimulator } from '../simulation/parameter-simulator';
 import { ParameterConfig } from '../types';
+import { resolveStatusCode } from './quality-codes';
 
 export class NodeSetAddressSpaceBuilder {
   private addressSpace: AddressSpace;
@@ -53,6 +53,18 @@ export class NodeSetAddressSpaceBuilder {
         this.bindEngValueSimulation(config.index, engVar);
       }
     }
+
+    // 4. Re-apply quality to current value immediately when a forced quality toggles
+    this.simulator.on('qualityOverrideChanged', ({ index }: { index: number }) => {
+      const engVar = this.engValueVariables.get(index);
+      const state = this.simulator.getParameterState(index);
+      if (!engVar || !state) return;
+      engVar.setValueFromSource(
+        new Variant({ dataType: DataType.Double, value: state.engValue }),
+        resolveStatusCode(this.simulator.getQualityOverride(index)),
+        new Date()
+      );
+    });
 
     console.log(`[NodeSet] Address space built with ${parseResult.parameters.length} parameters (EngValue only)`);
   }
@@ -148,7 +160,7 @@ export class NodeSetAddressSpaceBuilder {
     this.simulator.on(`engValue:${parameterIndex}`, (data: { timestamp: Date; engValue: number }) => {
       engValue.setValueFromSource(
         new Variant({ dataType: DataType.Double, value: data.engValue }),
-        StatusCodes.Good,
+        resolveStatusCode(this.simulator.getQualityOverride(parameterIndex)),
         data.timestamp
       );
     });

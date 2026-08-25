@@ -49,6 +49,7 @@ export class SQLiteHistoryStore {
         sample_index INTEGER NOT NULL,
         value REAL NOT NULL,
         eng_value REAL NOT NULL,
+        status_code INTEGER NOT NULL DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
       );
 
@@ -94,23 +95,34 @@ export class SQLiteHistoryStore {
       INSERT OR IGNORE INTO simulator_state (id, acquisition_status, scenario_name)
       VALUES (1, 0, 'realistic');
     `);
+
+    // Migration: add status_code column to historical_data for databases created
+    // before per-sample quality was introduced.
+    const historicalColumns = this.db
+      .prepare(`PRAGMA table_info(historical_data)`)
+      .all() as { name: string }[];
+    if (!historicalColumns.some((c) => c.name === 'status_code')) {
+      this.db.exec(
+        `ALTER TABLE historical_data ADD COLUMN status_code INTEGER NOT NULL DEFAULT 0`
+      );
+    }
   }
 
   private prepareStatements(): void {
     this.insertStmt = this.db.prepare(`
-      INSERT INTO historical_data (timestamp, parameter_index, sample_index, value, eng_value)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO historical_data (timestamp, parameter_index, sample_index, value, eng_value, status_code)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
 
     this.queryByTimeRangeStmt = this.db.prepare(`
-      SELECT timestamp, parameter_index, sample_index, value, eng_value
+      SELECT timestamp, parameter_index, sample_index, value, eng_value, status_code
       FROM historical_data
       WHERE parameter_index = ? AND timestamp BETWEEN ? AND ?
       ORDER BY timestamp ASC
     `);
 
     this.queryLatestStmt = this.db.prepare(`
-      SELECT timestamp, parameter_index, sample_index, value, eng_value
+      SELECT timestamp, parameter_index, sample_index, value, eng_value, status_code
       FROM historical_data
       WHERE parameter_index = ?
       ORDER BY timestamp DESC
@@ -132,7 +144,8 @@ export class SQLiteHistoryStore {
       dataPoint.parameterIndex,
       dataPoint.sampleIndex,
       dataPoint.value,
-      dataPoint.engValue
+      dataPoint.engValue,
+      dataPoint.statusCode ?? 0
     );
   }
 
@@ -147,7 +160,8 @@ export class SQLiteHistoryStore {
           point.parameterIndex,
           point.sampleIndex,
           point.value,
-          point.engValue
+          point.engValue,
+          point.statusCode ?? 0
         );
       }
     });
@@ -174,6 +188,7 @@ export class SQLiteHistoryStore {
       sampleIndex: row.sample_index,
       value: row.value,
       engValue: row.eng_value,
+      statusCode: row.status_code ?? 0,
     }));
   }
 
@@ -189,6 +204,7 @@ export class SQLiteHistoryStore {
       sampleIndex: row.sample_index,
       value: row.value,
       engValue: row.eng_value,
+      statusCode: row.status_code ?? 0,
     })).reverse(); // Return in chronological order
   }
 
@@ -197,6 +213,16 @@ export class SQLiteHistoryStore {
    */
   deleteOldData(beforeDate: Date): number {
     const result = this.deleteOldDataStmt.run(beforeDate.toISOString());
+    return result.changes;
+  }
+
+  /**
+   * Purge the entire history table (historical_data). Returns the number of
+   * deleted rows. Used by the dashboard "Purge history" button to avoid a large
+   * backlog that overwhelms OPC UA HistoryRead clients.
+   */
+  clearHistory(): number {
+    const result = this.db.prepare('DELETE FROM historical_data').run();
     return result.changes;
   }
 
